@@ -37,7 +37,7 @@ namespace KlayGE
 	public:
 		explicit OGLESDepthStencilStateObject(DepthStencilStateDesc const & desc);
 
-		void Active(uint16_t front_stencil_ref, uint16_t back_stencil_ref);
+		void Active() override;
 		void ForceDefaultState();
 
 	private:
@@ -58,7 +58,7 @@ namespace KlayGE
 	public:
 		explicit OGLESBlendStateObject(BlendStateDesc const & desc);
 
-		void Active(Color const & blend_factor, uint32_t sample_mask);
+		void Active() override;
 		void ForceDefaultState();
 
 	private:

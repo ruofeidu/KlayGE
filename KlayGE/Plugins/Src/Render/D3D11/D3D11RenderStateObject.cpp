@@ -104,10 +104,10 @@ namespace KlayGE
 		depth_stencil_state_ = MakeCOMPtr(ds_state);
 	}
 
-	void D3D11DepthStencilStateObject::Active(uint16_t front_stencil_ref, uint16_t /*back_stencil_ref*/)
+	void D3D11DepthStencilStateObject::Active()
 	{
 		D3D11RenderEngine& re = *checked_cast<D3D11RenderEngine*>(&Context::Instance().RenderFactoryInstance().RenderEngineInstance());
-		re.OMSetDepthStencilState(depth_stencil_state_.get(), front_stencil_ref);
+		re.OMSetDepthStencilState(depth_stencil_state_.get(), desc_.front_stencil_ref);
 	}
 
 	D3D11BlendStateObject::D3D11BlendStateObject(BlendStateDesc const & desc)
@@ -170,10 +170,10 @@ namespace KlayGE
 		}
 	}
 
-	void D3D11BlendStateObject::Active(Color const & blend_factor, uint32_t sample_mask)
+	void D3D11BlendStateObject::Active()
 	{
 		D3D11RenderEngine& re = *checked_cast<D3D11RenderEngine*>(&Context::Instance().RenderFactoryInstance().RenderEngineInstance());
-		re.OMSetBlendState(blend_state_.get(), blend_factor, sample_mask);
+		re.OMSetBlendState(blend_state_.get(), desc_.blend_factor, desc_.sample_mask);
 	}
 
 	D3D11SamplerStateObject::D3D11SamplerStateObject(SamplerStateDesc const & desc)

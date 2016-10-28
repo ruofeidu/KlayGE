@@ -75,7 +75,7 @@ namespace
 {
 	using namespace KlayGE;
 
-	uint32_t const KFX_VERSION = 0x0109;
+	uint32_t const KFX_VERSION = 0x0110;
 
 	std::mutex singleton_mutex;
 
@@ -4158,18 +4158,7 @@ namespace KlayGE
 			rs_desc = inherit_pass->rasterizer_state_obj_->GetDesc();
 			dss_desc = inherit_pass->depth_stencil_state_obj_->GetDesc();
 			bs_desc = inherit_pass->blend_state_obj_->GetDesc();
-			front_stencil_ref_ = inherit_pass->front_stencil_ref_;
-			back_stencil_ref_ = inherit_pass->back_stencil_ref_;
-			blend_factor_ = inherit_pass->blend_factor_;
-			sample_mask_ = inherit_pass->sample_mask_;
 			shader_desc_ids_ = inherit_pass->shader_desc_ids_;
-		}
-		else
-		{
-			front_stencil_ref_ = 0;
-			back_stencil_ref_ = 0;
-			blend_factor_ = Color(1, 1, 1, 1);
-			sample_mask_ = 0xFFFFFFFF;
 		}
 
 		for (XMLNodePtr state_node = node->FirstNode("state"); state_node; state_node = state_node->NextSibling("state"))
@@ -4294,27 +4283,27 @@ namespace KlayGE
 				XMLAttributePtr attr = state_node->Attrib("r");
 				if (attr)
 				{
-					blend_factor_.r() = attr->ValueFloat();
+					bs_desc.blend_factor.r() = attr->ValueFloat();
 				}
 				attr = state_node->Attrib("g");
 				if (attr)
 				{
-					blend_factor_.g() = attr->ValueFloat();
+					bs_desc.blend_factor.g() = attr->ValueFloat();
 				}
 				attr = state_node->Attrib("b");
 				if (attr)
 				{
-					blend_factor_.b() = attr->ValueFloat();
+					bs_desc.blend_factor.b() = attr->ValueFloat();
 				}
 				attr = state_node->Attrib("a");
 				if (attr)
 				{
-					blend_factor_.a() = attr->ValueFloat();
+					bs_desc.blend_factor.a() = attr->ValueFloat();
 				}
 			}
 			else if (CT_HASH("sample_mask") == state_name_hash)
 			{
-				sample_mask_ = state_node->Attrib("value")->ValueUInt();
+				bs_desc.sample_mask = state_node->Attrib("value")->ValueUInt();
 			}
 			else if (CT_HASH("depth_enable") == state_name_hash)
 			{
@@ -4340,7 +4329,7 @@ namespace KlayGE
 			}
 			else if (CT_HASH("front_stencil_ref") == state_name_hash)
 			{
-				front_stencil_ref_ = static_cast<uint16_t>(state_node->Attrib("value")->ValueUInt());
+				dss_desc.front_stencil_ref = static_cast<uint16_t>(state_node->Attrib("value")->ValueUInt());
 			}
 			else if (CT_HASH("front_stencil_read_mask") == state_name_hash)
 			{
@@ -4376,7 +4365,7 @@ namespace KlayGE
 			}
 			else if (CT_HASH("back_stencil_ref") == state_name_hash)
 			{
-				back_stencil_ref_ = static_cast<uint16_t>(state_node->Attrib("value")->ValueUInt());
+				dss_desc.back_stencil_ref = static_cast<uint16_t>(state_node->Attrib("value")->ValueUInt());
 			}
 			else if (CT_HASH("back_stencil_read_mask") == state_name_hash)
 			{
@@ -4605,10 +4594,6 @@ namespace KlayGE
 		rasterizer_state_obj_ = inherit_pass->rasterizer_state_obj_;
 		depth_stencil_state_obj_ = inherit_pass->depth_stencil_state_obj_;
 		blend_state_obj_ = inherit_pass->blend_state_obj_;
-		front_stencil_ref_ = inherit_pass->front_stencil_ref_;
-		back_stencil_ref_ = inherit_pass->back_stencil_ref_;
-		blend_factor_ = inherit_pass->blend_factor_;
-		sample_mask_ = inherit_pass->sample_mask_;
 
 		for (int type = 0; type < ShaderObject::ST_NumShaderTypes; ++ type)
 		{
@@ -4682,12 +4667,14 @@ namespace KlayGE
 		res->read(&dss_desc, sizeof(dss_desc));
 		dss_desc.depth_func = LE2Native(dss_desc.depth_func);
 		dss_desc.front_stencil_func = LE2Native(dss_desc.front_stencil_func);
+		dss_desc.front_stencil_ref = LE2Native(dss_desc.front_stencil_ref);
 		dss_desc.front_stencil_read_mask = LE2Native(dss_desc.front_stencil_read_mask);
 		dss_desc.front_stencil_write_mask = LE2Native(dss_desc.front_stencil_write_mask);
 		dss_desc.front_stencil_fail = LE2Native(dss_desc.front_stencil_fail);
 		dss_desc.front_stencil_depth_fail = LE2Native(dss_desc.front_stencil_depth_fail);
 		dss_desc.front_stencil_pass = LE2Native(dss_desc.front_stencil_pass);
 		dss_desc.back_stencil_func = LE2Native(dss_desc.back_stencil_func);
+		dss_desc.back_stencil_ref = LE2Native(dss_desc.back_stencil_ref);
 		dss_desc.back_stencil_read_mask = LE2Native(dss_desc.back_stencil_read_mask);
 		dss_desc.back_stencil_write_mask = LE2Native(dss_desc.back_stencil_write_mask);
 		dss_desc.back_stencil_fail = LE2Native(dss_desc.back_stencil_fail);
@@ -4695,6 +4682,11 @@ namespace KlayGE
 		dss_desc.back_stencil_pass = LE2Native(dss_desc.back_stencil_pass);
 
 		res->read(&bs_desc, sizeof(bs_desc));
+		for (size_t i = 0; i < 4; ++ i)
+		{
+			bs_desc.blend_factor[i] = LE2Native(bs_desc.blend_factor[i]);
+		}
+		bs_desc.sample_mask = LE2Native(bs_desc.sample_mask);
 		for (size_t i = 0; i < bs_desc.blend_op.size(); ++ i)
 		{
 			bs_desc.blend_op[i] = LE2Native(bs_desc.blend_op[i]);
@@ -4708,18 +4700,6 @@ namespace KlayGE
 		rasterizer_state_obj_ = rf.MakeRasterizerStateObject(rs_desc);
 		depth_stencil_state_obj_ = rf.MakeDepthStencilStateObject(dss_desc);
 		blend_state_obj_ = rf.MakeBlendStateObject(bs_desc);
-
-		res->read(&front_stencil_ref_, sizeof(front_stencil_ref_));
-		front_stencil_ref_ = LE2Native(front_stencil_ref_);
-		res->read(&back_stencil_ref_, sizeof(back_stencil_ref_));
-		back_stencil_ref_ = LE2Native(back_stencil_ref_);
-		res->read(&blend_factor_, sizeof(blend_factor_));
-		for (int i = 0; i < 4; ++ i)
-		{
-			blend_factor_[i] = LE2Native(blend_factor_[i]);
-		}
-		res->read(&sample_mask_, sizeof(sample_mask_));
-		sample_mask_ = LE2Native(sample_mask_);
 
 		res->read(&shader_desc_ids_[0], shader_desc_ids_.size() * sizeof(shader_desc_ids_[0]));
 		for (int i = 0; i < ShaderObject::ST_NumShaderTypes; ++ i)
@@ -4817,12 +4797,14 @@ namespace KlayGE
 		
 		dss_desc.depth_func = Native2LE(dss_desc.depth_func);
 		dss_desc.front_stencil_func = Native2LE(dss_desc.front_stencil_func);
+		dss_desc.front_stencil_ref = Native2LE(dss_desc.front_stencil_ref);
 		dss_desc.front_stencil_read_mask = Native2LE(dss_desc.front_stencil_read_mask);
 		dss_desc.front_stencil_write_mask = Native2LE(dss_desc.front_stencil_write_mask);
 		dss_desc.front_stencil_fail = Native2LE(dss_desc.front_stencil_fail);
 		dss_desc.front_stencil_depth_fail = Native2LE(dss_desc.front_stencil_depth_fail);
 		dss_desc.front_stencil_pass = Native2LE(dss_desc.front_stencil_pass);
 		dss_desc.back_stencil_func = Native2LE(dss_desc.back_stencil_func);
+		dss_desc.back_stencil_ref = Native2LE(dss_desc.back_stencil_ref);
 		dss_desc.back_stencil_read_mask = Native2LE(dss_desc.back_stencil_read_mask);
 		dss_desc.back_stencil_write_mask = Native2LE(dss_desc.back_stencil_write_mask);
 		dss_desc.back_stencil_fail = Native2LE(dss_desc.back_stencil_fail);
@@ -4830,6 +4812,11 @@ namespace KlayGE
 		dss_desc.back_stencil_pass = Native2LE(dss_desc.back_stencil_pass);
 		os.write(reinterpret_cast<char const *>(&dss_desc), sizeof(dss_desc));
 
+		for (size_t i = 0; i < 4; ++ i)
+		{
+			bs_desc.blend_factor[i] = Native2LE(bs_desc.blend_factor[i]);
+		}
+		bs_desc.sample_mask = Native2LE(bs_desc.sample_mask);
 		for (size_t i = 0; i < bs_desc.blend_op.size(); ++ i)
 		{
 			bs_desc.blend_op[i] = Native2LE(bs_desc.blend_op[i]);
@@ -4840,26 +4827,6 @@ namespace KlayGE
 			bs_desc.dest_blend_alpha[i] = Native2LE(bs_desc.dest_blend_alpha[i]);
 		}		
 		os.write(reinterpret_cast<char const *>(&bs_desc), sizeof(bs_desc));
-
-		{
-			uint16_t tmp;
-			tmp = Native2LE(front_stencil_ref_);
-			os.write(reinterpret_cast<char const *>(&tmp), sizeof(tmp));
-			tmp = Native2LE(back_stencil_ref_);
-			os.write(reinterpret_cast<char const *>(&tmp), sizeof(tmp));
-		}
-		{
-			Color tmp;
-			tmp.r() = Native2LE(blend_factor_.r());
-			tmp.g() = Native2LE(blend_factor_.g());
-			tmp.b() = Native2LE(blend_factor_.b());
-			tmp.a() = Native2LE(blend_factor_.a());
-			os.write(reinterpret_cast<char const *>(&tmp), sizeof(tmp));
-		}
-		{
-			uint32_t tmp = Native2LE(sample_mask_);
-			os.write(reinterpret_cast<char const *>(&tmp), sizeof(tmp));
-		}
 
 		for (uint32_t i = 0; i < shader_desc_ids_.size(); ++ i)
 		{
@@ -4884,8 +4851,7 @@ namespace KlayGE
 	void RenderPass::Bind(RenderEffect const & effect) const
 	{
 		RenderEngine& render_eng = Context::Instance().RenderFactoryInstance().RenderEngineInstance();
-		render_eng.SetStateObjects(rasterizer_state_obj_, depth_stencil_state_obj_,
-			front_stencil_ref_, back_stencil_ref_, blend_state_obj_, blend_factor_, sample_mask_);
+		render_eng.SetStateObjects(rasterizer_state_obj_, depth_stencil_state_obj_, blend_state_obj_);
 
 		this->GetShaderObject(effect)->Bind();
 	}

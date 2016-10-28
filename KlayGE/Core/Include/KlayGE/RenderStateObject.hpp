@@ -239,6 +239,7 @@ namespace KlayGE
 
 		bool				front_stencil_enable;
 		CompareFunction		front_stencil_func;
+		uint16_t			front_stencil_ref;
 		uint16_t			front_stencil_read_mask;
 		uint16_t			front_stencil_write_mask;
 		StencilOperation	front_stencil_fail;
@@ -247,6 +248,7 @@ namespace KlayGE
 
 		bool				back_stencil_enable;
 		CompareFunction		back_stencil_func;
+		uint16_t			back_stencil_ref;
 		uint16_t			back_stencil_read_mask;
 		uint16_t			back_stencil_write_mask;
 		StencilOperation	back_stencil_fail;
@@ -260,6 +262,9 @@ namespace KlayGE
 
 	struct KLAYGE_CORE_API BlendStateDesc
 	{
+		Color blend_factor;
+		uint32_t sample_mask;
+
 		bool				alpha_to_coverage_enable;
 		bool				independent_blend_enable;
 
@@ -344,7 +349,7 @@ namespace KlayGE
 			return desc_;
 		}
 
-		virtual void Active(uint16_t front_stencil_ref, uint16_t back_stencil_ref) = 0;
+		virtual void Active() = 0;
 
 	protected:
 		DepthStencilStateDesc desc_;
@@ -367,7 +372,7 @@ namespace KlayGE
 			return desc_;
 		}
 
-		virtual void Active(Color const & blend_factor, uint32_t sample_mask) = 0;
+		virtual void Active() = 0;
 
 	protected:
 		BlendStateDesc desc_;

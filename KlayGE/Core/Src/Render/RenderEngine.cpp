@@ -66,10 +66,6 @@ namespace KlayGE
 	RenderEngine::RenderEngine()
 		: num_primitives_just_rendered_(0), num_vertices_just_rendered_(0),
 			num_draws_just_called_(0), num_dispatches_just_called_(0),
-			cur_front_stencil_ref_(0),
-			cur_back_stencil_ref_(0),
-			cur_blend_factor_(1, 1, 1, 1),
-			cur_sample_mask_(0xFFFFFFFF),
 			default_fov_(PI / 4), default_render_width_scale_(1), default_render_height_scale_(1),
 			motion_frames_(0),
 			stereo_method_(STM_None), stereo_separation_(0),
@@ -481,9 +477,8 @@ namespace KlayGE
 
 	// 设置当前渲染状态对象
 	/////////////////////////////////////////////////////////////////////////////////
-	void RenderEngine::SetStateObjects(RasterizerStateObjectPtr const & rs_obj,
-		DepthStencilStateObjectPtr const & dss_obj, uint16_t front_stencil_ref, uint16_t back_stencil_ref,
-		BlendStateObjectPtr const & bs_obj, Color const & blend_factor, uint32_t sample_mask)
+	void RenderEngine::SetStateObjects(RasterizerStateObjectPtr const & rs_obj, DepthStencilStateObjectPtr const & dss_obj,
+		BlendStateObjectPtr const & bs_obj)
 	{
 		if (cur_rs_obj_ != rs_obj)
 		{
@@ -501,20 +496,16 @@ namespace KlayGE
 			cur_rs_obj_ = rs_obj;
 		}
 
-		if ((cur_dss_obj_ != dss_obj) || (cur_front_stencil_ref_ != front_stencil_ref) || (cur_back_stencil_ref_ != back_stencil_ref))
+		if (cur_dss_obj_ != dss_obj)
 		{
-			dss_obj->Active(front_stencil_ref, back_stencil_ref);
+			dss_obj->Active();
 			cur_dss_obj_ = dss_obj;
-			cur_front_stencil_ref_ = front_stencil_ref;
-			cur_back_stencil_ref_ = back_stencil_ref;
 		}
 
-		if ((cur_bs_obj_ != bs_obj) || (cur_blend_factor_ != blend_factor) || (cur_sample_mask_ != sample_mask))
+		if (cur_bs_obj_ != bs_obj)
 		{
-			bs_obj->Active(blend_factor, sample_mask);
+			bs_obj->Active();
 			cur_bs_obj_ = bs_obj;
-			cur_blend_factor_ = blend_factor;
-			cur_sample_mask_ = sample_mask;
 		}
 	}
 

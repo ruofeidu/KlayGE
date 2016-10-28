@@ -83,10 +83,10 @@ namespace KlayGE
 		depth_stencil_desc_.BackFace.StencilFunc = D3D12Mapping::Mapping(desc.back_stencil_func);
 	}
 
-	void D3D12DepthStencilStateObject::Active(uint16_t front_stencil_ref, uint16_t /*back_stencil_ref*/)
+	void D3D12DepthStencilStateObject::Active()
 	{
 		D3D12RenderEngine& re = *checked_cast<D3D12RenderEngine*>(&Context::Instance().RenderFactoryInstance().RenderEngineInstance());
-		re.OMSetStencilRef(front_stencil_ref);
+		re.OMSetStencilRef(desc_.front_stencil_ref);
 	}
 
 	D3D12BlendStateObject::D3D12BlendStateObject(BlendStateDesc const & desc)
@@ -116,10 +116,10 @@ namespace KlayGE
 		}
 	}
 
-	void D3D12BlendStateObject::Active(Color const & blend_factor, uint32_t sample_mask)
+	void D3D12BlendStateObject::Active()
 	{
 		D3D12RenderEngine& re = *checked_cast<D3D12RenderEngine*>(&Context::Instance().RenderFactoryInstance().RenderEngineInstance());
-		re.OMSetBlendState(blend_factor, sample_mask);
+		re.OMSetBlendFactor(desc_.blend_factor);
 	}
 
 	D3D12SamplerStateObject::D3D12SamplerStateObject(SamplerStateDesc const & desc)

@@ -927,10 +927,7 @@ namespace KlayGE
 
 		RasterizerStateObjectPtr rasterizer_state_obj_;
 		DepthStencilStateObjectPtr depth_stencil_state_obj_;
-		uint16_t front_stencil_ref_, back_stencil_ref_;
 		BlendStateObjectPtr blend_state_obj_;
-		Color blend_factor_;
-		uint32_t sample_mask_;
 		uint32_t shader_obj_index_;
 
 		bool is_validate_;

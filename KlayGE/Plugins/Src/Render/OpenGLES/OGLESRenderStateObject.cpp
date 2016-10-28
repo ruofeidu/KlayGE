@@ -131,13 +131,11 @@ namespace KlayGE
 	{
 	}
 
-	void OGLESDepthStencilStateObject::Active(uint16_t front_stencil_ref, uint16_t back_stencil_ref)
+	void OGLESDepthStencilStateObject::Active()
 	{
 		OGLESRenderEngine& re = *checked_cast<OGLESRenderEngine*>(&Context::Instance().RenderFactoryInstance().RenderEngineInstance());
 
 		DepthStencilStateDesc const & cur_desc = re.CurDSSObj()->GetDesc();
-		uint16_t const cur_front_stencil_ref = re.CurFrontStencilRef();
-		uint16_t const cur_back_stencil_ref = re.CurBackStencilRef();
 
 		if (cur_desc.depth_enable != desc_.depth_enable)
 		{
@@ -160,11 +158,11 @@ namespace KlayGE
 		}
 
 		if ((cur_desc.front_stencil_func != desc_.front_stencil_func)
-			|| (cur_front_stencil_ref != front_stencil_ref)
+			|| (cur_desc.front_stencil_ref != desc_.front_stencil_ref)
 			|| (cur_desc.front_stencil_read_mask != desc_.front_stencil_read_mask))
 		{
 			glStencilFuncSeparate(GL_FRONT, ogl_front_stencil_func_,
-					front_stencil_ref, desc_.front_stencil_read_mask);
+					desc_.front_stencil_ref, desc_.front_stencil_read_mask);
 		}
 		if ((cur_desc.front_stencil_fail != desc_.front_stencil_fail)
 			|| (cur_desc.front_stencil_depth_fail != desc_.front_stencil_depth_fail)
@@ -179,11 +177,11 @@ namespace KlayGE
 		}
 
 		if ((cur_desc.back_stencil_func != desc_.back_stencil_func)
-			|| (cur_back_stencil_ref != back_stencil_ref)
+			|| (cur_desc.back_stencil_ref != desc_.back_stencil_ref)
 			|| (cur_desc.back_stencil_read_mask != desc_.back_stencil_read_mask))
 		{
 			glStencilFuncSeparate(GL_BACK, ogl_back_stencil_func_,
-					back_stencil_ref, desc_.back_stencil_read_mask);
+					desc_.back_stencil_ref, desc_.back_stencil_read_mask);
 		}
 		if ((cur_desc.back_stencil_fail != desc_.back_stencil_fail)
 			|| (cur_desc.back_stencil_depth_fail != desc_.back_stencil_depth_fail)
@@ -260,12 +258,11 @@ namespace KlayGE
 	{
 	}
 
-	void OGLESBlendStateObject::Active(Color const & blend_factor, uint32_t /*sample_mask*/)
+	void OGLESBlendStateObject::Active()
 	{
 		OGLESRenderEngine& re = *checked_cast<OGLESRenderEngine*>(&Context::Instance().RenderFactoryInstance().RenderEngineInstance());
 
 		BlendStateDesc const & cur_desc = re.CurBSObj()->GetDesc();
-		Color const & cur_blend_factor = re.CurBlendFactor();
 
 		if (cur_desc.alpha_to_coverage_enable != desc_.alpha_to_coverage_enable)
 		{
@@ -310,9 +307,9 @@ namespace KlayGE
 					(desc_.color_write_mask[0] & CMASK_Alpha) != 0);
 		}
 
-		if (cur_blend_factor != blend_factor)
+		if (cur_desc.blend_factor != desc_.blend_factor)
 		{
-			glBlendColor(blend_factor.r(), blend_factor.g(), blend_factor.b(), blend_factor.a());
+			glBlendColor(desc_.blend_factor.r(), desc_.blend_factor.g(), desc_.blend_factor.b(), desc_.blend_factor.a());
 		}
 	}
 

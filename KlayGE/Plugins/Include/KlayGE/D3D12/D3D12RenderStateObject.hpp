@@ -59,7 +59,7 @@ namespace KlayGE
 	public:
 		explicit D3D12DepthStencilStateObject(DepthStencilStateDesc const & desc);
 
-		void Active(uint16_t front_stencil_ref, uint16_t back_stencil_ref);
+		void Active() override;
 
 		D3D12_DEPTH_STENCIL_DESC const & D3DDesc() const
 		{
@@ -75,7 +75,7 @@ namespace KlayGE
 	public:
 		explicit D3D12BlendStateObject(BlendStateDesc const & desc);
 
-		void Active(Color const & blend_factor, uint32_t sample_mask);
+		void Active() override;
 
 		D3D12_BLEND_DESC const & D3DDesc() const
 		{

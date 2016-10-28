@@ -511,7 +511,6 @@ namespace KlayGE
 
 		stencil_ref_cache_ = 0;
 		blend_factor_cache_ = Color(1, 1, 1, 1);
-		sample_mask_cache_ = 0xFFFFFFFF;
 
 		topology_type_cache_ = RenderLayout::TT_PointList;
 		d3d_render_cmd_list_->IASetPrimitiveTopology(D3D12Mapping::Mapping(topology_type_cache_));
@@ -567,6 +566,9 @@ namespace KlayGE
 		D3D12RenderLayout const & d3d12_rl = *checked_cast<D3D12RenderLayout const *>(&rl);
 
 		D3D12ShaderObjectPtr so = checked_pointer_cast<D3D12ShaderObject>(pass.GetShaderObject(effect));
+		D3D12RasterizerStateObject const & rso = *checked_pointer_cast<D3D12RasterizerStateObject>(pass.GetRasterizerStateObject());
+		D3D12BlendStateObject const & bso = *checked_pointer_cast<D3D12BlendStateObject>(pass.GetBlendStateObject());
+		D3D12DepthStencilStateObject const & dsso = *checked_pointer_cast<D3D12DepthStencilStateObject>(pass.GetDepthStencilStateObject());
 
 		D3D12_GRAPHICS_PIPELINE_STATE_DESC pso_desc;
 		pso_desc.pRootSignature = so->RootSignature().get();
@@ -648,10 +650,10 @@ namespace KlayGE
 		pso_desc.StreamOutput.NumStrides = static_cast<UINT>(so_strides.size());
 		pso_desc.StreamOutput.RasterizedStream = so->RasterizedStream();
 
-		pso_desc.BlendState = checked_pointer_cast<D3D12BlendStateObject>(pass.GetBlendStateObject())->D3DDesc();
-		pso_desc.SampleMask = sample_mask_cache_;
-		pso_desc.RasterizerState = checked_pointer_cast<D3D12RasterizerStateObject>(pass.GetRasterizerStateObject())->D3DDesc();
-		pso_desc.DepthStencilState = checked_pointer_cast<D3D12DepthStencilStateObject>(pass.GetDepthStencilStateObject())->D3DDesc();
+		pso_desc.BlendState = bso.D3DDesc();
+		pso_desc.SampleMask = bso.GetDesc().sample_mask;
+		pso_desc.RasterizerState = rso.D3DDesc();
+		pso_desc.DepthStencilState = dsso.D3DDesc();
 		pso_desc.InputLayout.pInputElementDescs = d3d12_rl.InputElementDesc().empty() ? nullptr : &d3d12_rl.InputElementDesc()[0];
 		pso_desc.InputLayout.NumElements = static_cast<UINT>(d3d12_rl.InputElementDesc().size());
 		pso_desc.IBStripCutValue = (EF_R16UI == rl.IndexStreamFormat())
@@ -1045,9 +1047,6 @@ namespace KlayGE
 		D3D12FrameBuffer& fb = *checked_cast<D3D12FrameBuffer*>(this->CurFrameBuffer().get());
 		fb.SetRenderTargets();
 		fb.BindBarrier();
-
-		d3d_render_cmd_list_->OMSetStencilRef(stencil_ref_cache_);
-		d3d_render_cmd_list_->OMSetBlendFactor(&blend_factor_cache_.r());
 
 		std::vector<D3D12_RESOURCE_BARRIER> barriers;
 
@@ -1837,14 +1836,13 @@ namespace KlayGE
 		}
 	}
 
-	void D3D12RenderEngine::OMSetBlendState(Color const & blend_factor, uint32_t sample_mask)
+	void D3D12RenderEngine::OMSetBlendFactor(Color const & blend_factor)
 	{
 		if (blend_factor_cache_ != blend_factor)
 		{
 			blend_factor_cache_ = blend_factor;
 			d3d_render_cmd_list_->OMSetBlendFactor(&blend_factor_cache_.r());
 		}
-		sample_mask_cache_ = sample_mask;
 	}
 
 	void D3D12RenderEngine::RSSetViewports(UINT NumViewports, D3D12_VIEWPORT const * pViewports)
