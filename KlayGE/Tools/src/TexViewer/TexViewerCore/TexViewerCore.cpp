@@ -1,4 +1,5 @@
 #include <KlayGE/KlayGE.hpp>
+#include <KFL/ErrorHandling.hpp>
 #include <KlayGE/Context.hpp>
 #include <KlayGE/ResLoader.hpp>
 #include <KlayGE/FrameBuffer.hpp>
@@ -7,7 +8,7 @@
 #include <KlayGE/RenderEffect.hpp>
 #include <KlayGE/RenderableHelper.hpp>
 #include <KlayGE/Camera.hpp>
-#include <KlayGE/SceneObjectHelper.hpp>
+#include <KlayGE/SceneNodeHelper.hpp>
 #include <KlayGE/DeferredRenderingLayer.hpp>
 #include <KlayGE/UI.hpp>
 #include <KlayGE/Mesh.hpp>
@@ -26,17 +27,16 @@ using namespace KlayGE;
 
 namespace
 {
-	class RenderQuad : public RenderableHelper
+	class RenderQuad : public Renderable
 	{
 	public:
 		RenderQuad()
-			: RenderableHelper(L"Quad")
+			: Renderable(L"Quad")
 		{
 			RenderFactory& rf = Context::Instance().RenderFactoryInstance();
 
 			effect_ = SyncLoadRenderEffect("TexViewer.fxml");
 			technique_ = effect_->TechniqueByName("TexViewerTech");
-			mvp_param_ = effect_->ParameterByName("mvp");
 			texture_2d_param_ = effect_->ParameterByName("texture_2d");
 			zoom_param_ = effect_->ParameterByName("zoom");
 			rgb_scale_param_ = effect_->ParameterByName("rgb_scale");
@@ -51,12 +51,12 @@ namespace
 				float2(1, 1),
 			};
 
-			rl_ = rf.MakeRenderLayout();
-			rl_->TopologyType(RenderLayout::TT_TriangleStrip);
+			rls_[0] = rf.MakeRenderLayout();
+			rls_[0]->TopologyType(RenderLayout::TT_TriangleStrip);
 
 			GraphicsBufferPtr pos_vb = rf.MakeVertexBuffer(BU_Static, EAH_GPU_Read | EAH_Immutable, sizeof(xyzs), xyzs);
 
-			rl_->BindVertexStream(pos_vb, std::make_tuple(vertex_element(VEU_Position, 0, EF_GR32F)));
+			rls_[0]->BindVertexStream(pos_vb, VertexElement(VEU_Position, 0, EF_GR32F));
 
 			pos_aabb_ = AABBox(float3(-1, -1, -1), float3(1, 1, 1));
 			tc_aabb_ = AABBox(float3(0, 0, 0), float3(1, 1, 0));
@@ -64,7 +64,11 @@ namespace
 
 		void OnRenderBegin()
 		{
-			*mvp_param_ = model_mat_;
+			Renderable::OnRenderBegin();
+
+			auto const& pmccb = Context::Instance().RenderFactoryInstance().RenderEngineInstance().PredefinedModelCameraCBufferInstance();
+			pmccb.Mvp(*model_camera_cbuffer_) = MathLib::transpose(model_mat_);
+			model_camera_cbuffer_->Dirty(true);
 		}
 
 		void Texture(TexturePtr const & tex)
@@ -111,16 +115,6 @@ namespace KlayGE
 		ResLoader::Instance().AddPath("../../Tools/media/TexViewer");
 	}
 
-	bool TexViewerCore::ConfirmDevice() const
-	{
-		RenderDeviceCaps const & caps = Context::Instance().RenderFactoryInstance().RenderEngineInstance().DeviceCaps();
-		if (caps.max_shader_model < ShaderModel(4, 0))
-		{
-			return false;
-		}
-		return true;
-	}
-
 	void TexViewerCore::Resize(uint32_t width, uint32_t height)
 	{
 		Context::Instance().RenderFactoryInstance().RenderEngineInstance().Resize(width, height);
@@ -131,10 +125,10 @@ namespace KlayGE
 		font_ = SyncLoadFont("gkai00mp.kfont");
 
 		quad_ = MakeSharedPtr<RenderQuad>();
-		quad_so_ = MakeSharedPtr<SceneObjectHelper>(quad_,
-			SceneObject::SOA_Cullable | SceneObject::SOA_Moveable | SceneObject::SOA_NotCastShadow);
+		quad_so_ = MakeSharedPtr<SceneNode>(MakeSharedPtr<RenderableComponent>(quad_),
+			SceneNode::SOA_Cullable | SceneNode::SOA_Moveable | SceneNode::SOA_NotCastShadow);
 		quad_so_->Visible(false);
-		quad_so_->AddToSceneManager();
+		Context::Instance().SceneManagerInstance().SceneRootNode().AddChild(quad_so_);
 
 		this->LookAt(float3(-5, 5, -5), float3(0, 1, 0), float3(0.0f, 1.0f, 0.0f));
 		this->Proj(0.1f, 100);
@@ -316,7 +310,7 @@ namespace KlayGE
 			if (texels_.empty())
 			{
 				RenderFactory& rf = Context::Instance().RenderFactoryInstance();
-				TexturePtr texture_cpu = rf.MakeTexture2D(width, height, 1, 1, EF_ABGR32F, 1, 0, EAH_CPU_Read, nullptr);
+				TexturePtr texture_cpu = rf.MakeTexture2D(width, height, 1, 1, EF_ABGR32F, 1, 0, EAH_CPU_Read);
 				texture_display_->CopyToSubTexture2D(*texture_cpu, 0, 0, 0, 0, width, height,
 					0, 0, 0, 0, width, height);
 
@@ -325,7 +319,7 @@ namespace KlayGE
 				Texture::Mapper mapper(*texture_cpu, 0, 0, TMA_Read_Only, 0, 0, width, height);
 				float4 const * p = mapper.Pointer<float4>();
 				uint32_t pitch = mapper.RowPitch() / sizeof(float4);
-				for (uint32_t i = 0; i < height; ++i)
+				for (uint32_t i = 0; i < height; ++ i)
 				{
 					memcpy(&texels_[i * width], p + i * pitch, width * sizeof(float4));
 				}
@@ -345,7 +339,7 @@ namespace KlayGE
 		uint32_t const height = texture_original_->Height(active_mipmap_level_);
 
 		RenderFactory& rf = Context::Instance().RenderFactoryInstance();
-		texture_display_ = rf.MakeTexture2D(width, height, 1, 1, texture_original_->Format(), 1, 0, EAH_GPU_Read, nullptr);
+		texture_display_ = rf.MakeTexture2D(width, height, 1, 1, texture_original_->Format(), 1, 0, EAH_GPU_Read);
 		switch (texture_original_->Type())
 		{
 		case Texture::TT_1D:
@@ -357,7 +351,7 @@ namespace KlayGE
 		case Texture::TT_3D:
 			{
 				TexturePtr texture_3d_cpu = rf.MakeTexture3D(width, height, 1, 1, 1, texture_original_->Format(),
-					1, 0, EAH_CPU_Read, nullptr);
+					1, 0, EAH_CPU_Read);
 				texture_original_->CopyToSubTexture3D(*texture_3d_cpu, 0, 0, 0, 0, 0, width, height, 1,
 					active_array_index_, active_mipmap_level_, 0, 0, active_depth_index_, width, height, 1);
 				Texture::Mapper mapper_3d(*texture_3d_cpu, 0, 0, TMA_Read_Only, 0, 0, 0, width, height, 1);
@@ -366,7 +360,7 @@ namespace KlayGE
 				init_data.row_pitch = mapper_3d.RowPitch();
 				init_data.slice_pitch = mapper_3d.SlicePitch();
 				TexturePtr texture_2d_cpu = rf.MakeTexture2D(width, height, 1, 1, texture_original_->Format(),
-					1, 0, EAH_CPU_Write, &init_data);
+					1, 0, EAH_CPU_Write, init_data);
 				texture_2d_cpu->CopyToSubTexture2D(*texture_display_, 0, 0, 0, 0, width, height,
 					0, 0, 0, 0, width, height);
 			}
@@ -378,8 +372,7 @@ namespace KlayGE
 			break;
 
 		default:
-			BOOST_ASSERT(false);
-			break;
+			KFL_UNREACHABLE("Invalid texture type");
 		}
 
 		checked_pointer_cast<RenderQuad>(quad_)->Texture(texture_display_);
@@ -399,7 +392,7 @@ namespace KlayGE
 
 			float4x4 mat = MathLib::scaling(width * zoom_ / vp_width * 2.0f, height * zoom_ / vp_height * 2.0f, 1.0f)
 				* MathLib::translation((offset_x_ * 2 - width) * zoom_ / vp_width, (offset_y_ * 2 - height) * zoom_ / vp_height, 0.0f);
-			quad_so_->ModelMatrix(mat);
+			quad_so_->TransformToParent(mat);
 		}
 	}
 }

@@ -38,20 +38,22 @@
 
 namespace KlayGE
 {
-	SSRPostProcess::SSRPostProcess()
-			: PostProcess(L"ScreenSpaceReflection")
+	SSRPostProcess::SSRPostProcess(bool multi_sample)
+			: PostProcess(L"ScreenSpaceReflection", false,
+				{ "min_samples", "max_samples" },
+				{
+					multi_sample ? "g_buffer_rt0_tex_ms" : "g_buffer_rt0_tex",
+					multi_sample ? "g_buffer_rt1_tex_ms" : "g_buffer_rt1_tex",
+					"front_side_depth_tex",
+					"front_side_tex",
+					multi_sample ? "foreground_depth_tex_ms" : "foreground_depth_tex"
+				},
+				{ "output" },
+				RenderEffectPtr(), nullptr)
 	{
-		input_pins_.emplace_back("g_buffer_0_tex", TexturePtr());
-		input_pins_.emplace_back("g_buffer_1_tex", TexturePtr());
-		input_pins_.emplace_back("front_side_depth_tex", TexturePtr());
-		input_pins_.emplace_back("front_side_tex", TexturePtr());
-		input_pins_.emplace_back("foreground_depth_tex", TexturePtr());
-
-		params_.emplace_back("min_samples", nullptr);
-		params_.emplace_back("max_samples", nullptr);
-
 		RenderEffectPtr effect = SyncLoadRenderEffect("SSR.fxml");
-		this->Technique(effect, effect->TechniqueByName("ScreenSpaceReflectionPostProcess"));
+		this->Technique(effect,
+			effect->TechniqueByName(multi_sample ? "ScreenSpaceReflectionPostProcessMS" : "ScreenSpaceReflectionPostProcess"));
 
 		if (technique_ && technique_->Validate())
 		{
@@ -68,11 +70,11 @@ namespace KlayGE
 	void SSRPostProcess::Apply()
 	{
 		Camera& camera = Context::Instance().AppInstance().ActiveCamera();
-		float q = camera.FarPlane() / (camera.FarPlane() - camera.NearPlane());
+		float4 const near_q_far = camera.NearQFarParam();
 
 		*proj_param_ = camera.ProjMatrix();
 		*inv_proj_param_ = camera.InverseProjMatrix();
-		*near_q_far_param_ = float3(camera.NearPlane() * q, q, camera.FarPlane());
+		*near_q_far_param_ = float3(near_q_far.x(), near_q_far.y(), near_q_far.z());
 		*ray_length_param_ = camera.FarPlane() - camera.NearPlane();
 
 		this->Render();

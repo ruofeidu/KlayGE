@@ -29,7 +29,8 @@
  */
 
 #include <KlayGE/KlayGE.hpp>
-#include <KFL/ThrowErr.hpp>
+#include <KFL/CXX17/iterator.hpp>
+#include <KFL/ErrorHandling.hpp>
 #include <KFL/Math.hpp>
 #include <KFL/Util.hpp>
 #include <KFL/COMPtr.hpp>
@@ -57,6 +58,7 @@
 #include <KlayGE/D3D12/D3D12ShaderObject.hpp>
 #include <KlayGE/D3D12/D3D12RenderView.hpp>
 #include <KlayGE/D3D12/D3D12InterfaceLoader.hpp>
+#include <KlayGE/D3D12/D3D12Fence.hpp>
 
 #include <algorithm>
 #include <boost/assert.hpp>
@@ -68,27 +70,57 @@ namespace KlayGE
 	// 构造函数
 	/////////////////////////////////////////////////////////////////////////////////
 	D3D12RenderEngine::D3D12RenderEngine()
-		: last_engine_type_(ET_Render), inv_timestamp_freq_(0),
-			render_cmd_fence_val_(0), compute_cmd_fence_val_(0), copy_cmd_fence_val_(0),
-			res_cmd_fence_val_(0)
+		: render_cmd_fence_val_(0), res_cmd_fence_val_(0)
 	{
-		native_shader_fourcc_ = MakeFourCC<'D', 'X', 'B', 'C'>::value;
-		native_shader_version_ = 5;
+		UINT dxgi_factory_flags = 0;
 
-		IDXGIFactory4* gi_factory;
-		TIF(D3D12InterfaceLoader::Instance().CreateDXGIFactory1(IID_IDXGIFactory4, reinterpret_cast<void**>(&gi_factory)));
-		gi_factory_4_ = MakeCOMPtr(gi_factory);
+#ifdef KLAYGE_DEBUG
+		{
+			ID3D12Debug* debug_ctrl = nullptr;
+			if (SUCCEEDED(D3D12InterfaceLoader::Instance().D3D12GetDebugInterface(IID_ID3D12Debug, reinterpret_cast<void**>(&debug_ctrl))))
+			{
+				BOOST_ASSERT(debug_ctrl);
+				debug_ctrl->EnableDebugLayer();
+				debug_ctrl->Release();
+
+				dxgi_factory_flags |= DXGI_CREATE_FACTORY_DEBUG;
+			}
+		}
+#endif
+
+		native_shader_fourcc_ = MakeFourCC<'D', 'X', 'B', 'C'>::value;
+		native_shader_version_ = 6;
+
+		IDXGIFactory4* gi_factory_4;
+		TIFHR(D3D12InterfaceLoader::Instance().CreateDXGIFactory2(dxgi_factory_flags,
+			IID_IDXGIFactory4, reinterpret_cast<void**>(&gi_factory_4)));
+		gi_factory_4_ = MakeCOMPtr(gi_factory_4);
 		dxgi_sub_ver_ = 4;
 
-		IDXGIFactory5* gi_factory5;
-		gi_factory->QueryInterface(IID_IDXGIFactory5, reinterpret_cast<void**>(&gi_factory5));
-		if (gi_factory5 != nullptr)
+		IDXGIFactory5* gi_factory_5;
+		gi_factory_4->QueryInterface(IID_IDXGIFactory5, reinterpret_cast<void**>(&gi_factory_5));
+		if (gi_factory_5 != nullptr)
 		{
-			gi_factory_5_ = MakeCOMPtr(gi_factory5);
+			gi_factory_5_ = MakeCOMPtr(gi_factory_5);
 			dxgi_sub_ver_ = 5;
+
+			IDXGIFactory6* gi_factory_6;
+			gi_factory_4->QueryInterface(IID_IDXGIFactory5, reinterpret_cast<void**>(&gi_factory_6));
+			if (gi_factory_6 != nullptr)
+			{
+				gi_factory_6_ = MakeCOMPtr(gi_factory_6);
+				dxgi_sub_ver_ = 6;
+			}
 		}
 
-		adapterList_.Enumerate(gi_factory_4_);
+		if (gi_factory_6_)
+		{
+			adapterList_.Enumerate(gi_factory_6_);
+		}
+		else
+		{
+			adapterList_.Enumerate(gi_factory_4_);
+		}
 	}
 
 	// 析构函数
@@ -117,23 +149,12 @@ namespace KlayGE
 	{
 		RenderEngine::EndFrame();
 
-		this->ResetRenderCmd();
-		this->ResetComputeCmd();
-		this->ResetCopyCmd();
-		this->ClearPSOCache();
-	}
+		render_cmd_fence_val_ = checked_cast<D3D12Fence&>(*render_cmd_fence_).Signal(d3d_render_cmd_queue_.get());
+		this->RecycleCmdAllocator(curr_render_cmd_allocator_, render_cmd_fence_val_);
+		curr_render_cmd_allocator_ = this->AllocCmdAllocator();
 
-	void D3D12RenderEngine::UpdateGPUTimestampsFrequency()
-	{
-		inv_timestamp_freq_ = 0;
-		if (d3d_render_cmd_queue_)
-		{
-			UINT64 freq;
-			if (SUCCEEDED(d3d_render_cmd_queue_->GetTimestampFrequency(&freq)))
-			{
-				inv_timestamp_freq_ = 1.0 / freq;
-			}
-		}
+		this->ResetRenderCmd();
+		this->ClearTempObjs();
 	}
 
 	IDXGIFactory4* D3D12RenderEngine::DXGIFactory4() const
@@ -146,69 +167,44 @@ namespace KlayGE
 		return gi_factory_5_.get();
 	}
 
+	IDXGIFactory6* D3D12RenderEngine::DXGIFactory6() const
+	{
+		return gi_factory_6_.get();
+	}
+
 	uint8_t D3D12RenderEngine::DXGISubVer() const
 	{
 		return dxgi_sub_ver_;
 	}
 
-	ID3D12DevicePtr const & D3D12RenderEngine::D3DDevice() const
+	ID3D12Device* D3D12RenderEngine::D3DDevice() const
 	{
-		return d3d_device_;
+		return d3d_device_.get();
 	}
 
-	ID3D12CommandQueuePtr const & D3D12RenderEngine::D3DRenderCmdQueue() const
+	ID3D12CommandQueue* D3D12RenderEngine::D3DRenderCmdQueue() const
 	{
-		return d3d_render_cmd_queue_;
+		return d3d_render_cmd_queue_.get();
 	}
 
-	ID3D12CommandAllocatorPtr const & D3D12RenderEngine::D3DRenderCmdAllocator() const
+	ID3D12CommandAllocator* D3D12RenderEngine::D3DRenderCmdAllocator() const
 	{
-		return d3d_render_cmd_allocator_;
+		return curr_render_cmd_allocator_->cmd_allocator.get();
 	}
 
-	ID3D12GraphicsCommandListPtr const & D3D12RenderEngine::D3DRenderCmdList() const
+	ID3D12GraphicsCommandList* D3D12RenderEngine::D3DRenderCmdList() const
 	{
-		return d3d_render_cmd_list_;
+		return d3d_render_cmd_list_.get();
 	}
 
-	ID3D12CommandQueuePtr const & D3D12RenderEngine::D3DComputeCmdQueue() const
+	ID3D12CommandAllocator* D3D12RenderEngine::D3DResCmdAllocator() const
 	{
-		return d3d_compute_cmd_queue_;
+		return d3d_res_cmd_allocator_.get();
 	}
 
-	ID3D12CommandAllocatorPtr const & D3D12RenderEngine::D3DComputeCmdAllocator() const
+	ID3D12GraphicsCommandList* D3D12RenderEngine::D3DResCmdList() const
 	{
-		return d3d_compute_cmd_allocator_;
-	}
-
-	ID3D12GraphicsCommandListPtr const & D3D12RenderEngine::D3DComputeCmdList() const
-	{
-		return d3d_compute_cmd_list_;
-	}
-
-	ID3D12CommandQueuePtr const & D3D12RenderEngine::D3DCopyCmdQueue() const
-	{
-		return d3d_copy_cmd_queue_;
-	}
-
-	ID3D12CommandAllocatorPtr const & D3D12RenderEngine::D3DCopyCmdAllocator() const
-	{
-		return d3d_copy_cmd_allocator_;
-	}
-
-	ID3D12GraphicsCommandListPtr const & D3D12RenderEngine::D3DCopyCmdList() const
-	{
-		return d3d_copy_cmd_list_;
-	}
-
-	ID3D12CommandAllocatorPtr const & D3D12RenderEngine::D3DResCmdAllocator() const
-	{
-		return d3d_res_cmd_allocator_;
-	}
-
-	ID3D12GraphicsCommandListPtr const & D3D12RenderEngine::D3DResCmdList() const
-	{
-		return d3d_res_cmd_list_;
+		return d3d_res_cmd_list_.get();
 	}
 
 	D3D_FEATURE_LEVEL D3D12RenderEngine::DeviceFeatureLevel() const
@@ -225,7 +221,7 @@ namespace KlayGE
 
 	// 获取当前适配器
 	/////////////////////////////////////////////////////////////////////////////////
-	D3D12AdapterPtr const & D3D12RenderEngine::ActiveAdapter() const
+	D3D12Adapter& D3D12RenderEngine::ActiveAdapter() const
 	{
 		return adapterList_.Adapter(adapterList_.CurrentAdapterIndex());
 	}
@@ -235,28 +231,33 @@ namespace KlayGE
 	void D3D12RenderEngine::DoCreateRenderWindow(std::string const & name,
 		RenderSettings const & settings)
 	{
-		motion_frames_ = settings.motion_frames;
+		D3D12RenderWindowPtr win = MakeSharedPtr<D3D12RenderWindow>(&this->ActiveAdapter(), name, settings);
 
-		D3D12RenderWindowPtr win = MakeSharedPtr<D3D12RenderWindow>(this->ActiveAdapter(), name, settings);
-
+		native_shader_platform_name_ = "d3d_12_0";
 		switch (d3d_feature_level_)
 		{
 		case D3D_FEATURE_LEVEL_12_1:
 		case D3D_FEATURE_LEVEL_12_0:
+			shader_profiles_[static_cast<uint32_t>(ShaderStage::Vertex)] = "vs_5_1";
+			shader_profiles_[static_cast<uint32_t>(ShaderStage::Pixel)] = "ps_5_1";
+			shader_profiles_[static_cast<uint32_t>(ShaderStage::Geometry)] = "gs_5_1";
+			shader_profiles_[static_cast<uint32_t>(ShaderStage::Compute)] = "cs_5_1";
+			shader_profiles_[static_cast<uint32_t>(ShaderStage::Hull)] = "hs_5_1";
+			shader_profiles_[static_cast<uint32_t>(ShaderStage::Domain)] = "ds_5_1";
+			break;
+
 		case D3D_FEATURE_LEVEL_11_1:
 		case D3D_FEATURE_LEVEL_11_0:
-			native_shader_platform_name_ = "d3d_11_0";
-			vs_profile_ = "vs_5_0";
-			ps_profile_ = "ps_5_0";
-			gs_profile_ = "gs_5_0";
-			cs_profile_ = "cs_5_0";
-			hs_profile_ = "hs_5_0";
-			ds_profile_ = "ds_5_0";
+			shader_profiles_[static_cast<uint32_t>(ShaderStage::Vertex)] = "vs_5_0";
+			shader_profiles_[static_cast<uint32_t>(ShaderStage::Pixel)] = "ps_5_0";
+			shader_profiles_[static_cast<uint32_t>(ShaderStage::Geometry)] = "gs_5_0";
+			shader_profiles_[static_cast<uint32_t>(ShaderStage::Compute)] = "cs_5_0";
+			shader_profiles_[static_cast<uint32_t>(ShaderStage::Hull)] = "hs_5_0";
+			shader_profiles_[static_cast<uint32_t>(ShaderStage::Domain)] = "ds_5_0";
 			break;
 
 		default:
-			BOOST_ASSERT(false);
-			break;
+			KFL_UNREACHABLE("Invalid feature level");
 		}
 
 		this->ResetRenderStates();
@@ -281,70 +282,29 @@ namespace KlayGE
 		KFL_UNUSED(settings);
 	}
 
-	void D3D12RenderEngine::D3DDevice(ID3D12DevicePtr const & device, ID3D12CommandQueuePtr const & cmd_queue, D3D_FEATURE_LEVEL feature_level)
+	void D3D12RenderEngine::D3DDevice(ID3D12Device* device, ID3D12CommandQueue* cmd_queue, D3D_FEATURE_LEVEL feature_level)
 	{
-		d3d_device_ = device;
-		d3d_render_cmd_queue_ = cmd_queue;
+		d3d_device_ = MakeCOMPtr(device);
+		d3d_render_cmd_queue_ = MakeCOMPtr(cmd_queue);
 		d3d_feature_level_ = feature_level;
 
 		Verify(!!d3d_render_cmd_queue_);
 		Verify(!!d3d_device_);
 
-		ID3D12CommandAllocator* d3d_render_cmd_allocator;
-		TIF(d3d_device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
-			IID_ID3D12CommandAllocator, reinterpret_cast<void**>(&d3d_render_cmd_allocator)));
-		d3d_render_cmd_allocator_ = MakeCOMPtr(d3d_render_cmd_allocator);
+		curr_render_cmd_allocator_ = this->AllocCmdAllocator();
 
 		ID3D12GraphicsCommandList* d3d_render_cmd_list;
-		TIF(d3d_device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, d3d_render_cmd_allocator_.get(), nullptr,
+		TIFHR(d3d_device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, curr_render_cmd_allocator_->cmd_allocator.get(), nullptr,
 			IID_ID3D12GraphicsCommandList, reinterpret_cast<void**>(&d3d_render_cmd_list)));
 		d3d_render_cmd_list_ = MakeCOMPtr(d3d_render_cmd_list);
 
-		D3D12_COMMAND_QUEUE_DESC queue_desc;
-		queue_desc.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
-		queue_desc.Priority = 0;
-		queue_desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
-		queue_desc.NodeMask = 0;
-
-		ID3D12CommandQueue* d3d_compute_cmd_queue;
-		TIF(d3d_device_->CreateCommandQueue(&queue_desc,
-			IID_ID3D12CommandQueue, reinterpret_cast<void**>(&d3d_compute_cmd_queue)));
-		d3d_compute_cmd_queue_ = MakeCOMPtr(d3d_compute_cmd_queue);
-
-		ID3D12CommandAllocator* d3d_compute_cmd_allocator;
-		TIF(d3d_device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COMPUTE,
-			IID_ID3D12CommandAllocator, reinterpret_cast<void**>(&d3d_compute_cmd_allocator)));
-		d3d_compute_cmd_allocator_ = MakeCOMPtr(d3d_compute_cmd_allocator);
-
-		ID3D12GraphicsCommandList* d3d_compute_cmd_list;
-		TIF(d3d_device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_COMPUTE, d3d_compute_cmd_allocator_.get(), nullptr,
-			IID_ID3D12GraphicsCommandList, reinterpret_cast<void**>(&d3d_compute_cmd_list)));
-		d3d_compute_cmd_list_ = MakeCOMPtr(d3d_compute_cmd_list);
-
-		queue_desc.Type = D3D12_COMMAND_LIST_TYPE_COPY;
-
-		ID3D12CommandQueue* d3d_copy_cmd_queue;
-		TIF(d3d_device_->CreateCommandQueue(&queue_desc,
-			IID_ID3D12CommandQueue, reinterpret_cast<void**>(&d3d_copy_cmd_queue)));
-		d3d_copy_cmd_queue_ = MakeCOMPtr(d3d_copy_cmd_queue);
-
-		ID3D12CommandAllocator* d3d_copy_cmd_allocator;
-		TIF(d3d_device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COPY,
-			IID_ID3D12CommandAllocator, reinterpret_cast<void**>(&d3d_copy_cmd_allocator)));
-		d3d_copy_cmd_allocator_ = MakeCOMPtr(d3d_copy_cmd_allocator);
-
-		ID3D12GraphicsCommandList* d3d_copy_cmd_list;
-		TIF(d3d_device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_COPY, d3d_copy_cmd_allocator_.get(), nullptr,
-			IID_ID3D12GraphicsCommandList, reinterpret_cast<void**>(&d3d_copy_cmd_list)));
-		d3d_copy_cmd_list_ = MakeCOMPtr(d3d_copy_cmd_list);
-
 		ID3D12CommandAllocator* d3d_res_cmd_allocator;
-		TIF(d3d_device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+		TIFHR(d3d_device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
 			IID_ID3D12CommandAllocator, reinterpret_cast<void**>(&d3d_res_cmd_allocator)));
 		d3d_res_cmd_allocator_ = MakeCOMPtr(d3d_res_cmd_allocator);
 
 		ID3D12GraphicsCommandList* d3d_res_cmd_list;
-		TIF(d3d_device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, d3d_res_cmd_allocator_.get(), nullptr,
+		TIFHR(d3d_device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, d3d_res_cmd_allocator_.get(), nullptr,
 			IID_ID3D12GraphicsCommandList, reinterpret_cast<void**>(&d3d_res_cmd_list)));
 		d3d_res_cmd_list_ = MakeCOMPtr(d3d_res_cmd_list);
 
@@ -354,7 +314,7 @@ namespace KlayGE
 		rtv_desc_heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
 		rtv_desc_heap.NodeMask = 0;
 		ID3D12DescriptorHeap* rtv_descriptor_heap;
-		TIF(d3d_device_->CreateDescriptorHeap(&rtv_desc_heap, IID_ID3D12DescriptorHeap,
+		TIFHR(d3d_device_->CreateDescriptorHeap(&rtv_desc_heap, IID_ID3D12DescriptorHeap,
 			reinterpret_cast<void**>(&rtv_descriptor_heap)));
 		rtv_desc_heap_ = MakeCOMPtr(rtv_descriptor_heap);
 		rtv_desc_size_ = d3d_device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
@@ -365,7 +325,7 @@ namespace KlayGE
 		dsv_desc_heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
 		dsv_desc_heap.NodeMask = 0;
 		ID3D12DescriptorHeap* dsv_descriptor_heap;
-		TIF(d3d_device_->CreateDescriptorHeap(&dsv_desc_heap, IID_ID3D12DescriptorHeap,
+		TIFHR(d3d_device_->CreateDescriptorHeap(&dsv_desc_heap, IID_ID3D12DescriptorHeap,
 			reinterpret_cast<void**>(&dsv_descriptor_heap)));
 		dsv_desc_heap_ = MakeCOMPtr(dsv_descriptor_heap);
 		dsv_desc_size_ = d3d_device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
@@ -376,14 +336,16 @@ namespace KlayGE
 		cbv_srv_uav_desc_heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
 		cbv_srv_uav_desc_heap.NodeMask = 0;
 		ID3D12DescriptorHeap* cbv_srv_uav_descriptor_heap;
-		TIF(d3d_device_->CreateDescriptorHeap(&cbv_srv_uav_desc_heap, IID_ID3D12DescriptorHeap,
+		TIFHR(d3d_device_->CreateDescriptorHeap(&cbv_srv_uav_desc_heap, IID_ID3D12DescriptorHeap,
 			reinterpret_cast<void**>(&cbv_srv_uav_descriptor_heap)));
 		cbv_srv_uav_desc_heap_ = MakeCOMPtr(cbv_srv_uav_descriptor_heap);
 		cbv_srv_uav_desc_size_ = d3d_device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-		rtv_heap_occupied_.assign(NUM_MAX_RENDER_TARGET_VIEWS, false);
-		dsv_heap_occupied_.assign(NUM_MAX_DEPTH_STENCIL_VIEWS, false);
-		cbv_srv_uav_heap_occupied_.assign(NUM_MAX_CBV_SRV_UAVS, false);
+		sampler_desc_size_ = d3d_device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+
+		rtv_heap_occupied_.reset();
+		dsv_heap_occupied_.reset();
+		cbv_srv_uav_heap_occupied_.reset();
 
 		D3D12_SHADER_RESOURCE_VIEW_DESC null_srv_desc;
 		null_srv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -409,30 +371,79 @@ namespace KlayGE
 		RenderFactory& rf = Context::Instance().RenderFactoryInstance();
 
 		res_cmd_fence_ = rf.MakeFence();
-
 		render_cmd_fence_ = rf.MakeFence();
-		compute_cmd_fence_ = rf.MakeFence();
-		copy_cmd_fence_ = rf.MakeFence();
+
+		{
+			D3D12_INDIRECT_ARGUMENT_DESC indirect_param;
+			indirect_param.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW;
+
+			D3D12_COMMAND_SIGNATURE_DESC cmd_signature_desc;
+			cmd_signature_desc.ByteStride = sizeof(D3D12_DRAW_ARGUMENTS);
+			cmd_signature_desc.NumArgumentDescs = 1;
+			cmd_signature_desc.pArgumentDescs = &indirect_param;
+			cmd_signature_desc.NodeMask = 1;
+
+			ID3D12CommandSignature* cmd_signature;
+			TIFHR(d3d_device_->CreateCommandSignature(&cmd_signature_desc, nullptr,
+				IID_ID3D12CommandSignature, reinterpret_cast<void**>(&cmd_signature)));
+			draw_indirect_signature_ = MakeCOMPtr(cmd_signature);
+		}
+		{
+			D3D12_INDIRECT_ARGUMENT_DESC indirect_param;
+			indirect_param.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+
+			D3D12_COMMAND_SIGNATURE_DESC cmd_signature_desc;
+			cmd_signature_desc.ByteStride = sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
+			cmd_signature_desc.NumArgumentDescs = 1;
+			cmd_signature_desc.pArgumentDescs = &indirect_param;
+			cmd_signature_desc.NodeMask = 1;
+
+			ID3D12CommandSignature* cmd_signature;
+			TIFHR(d3d_device_->CreateCommandSignature(&cmd_signature_desc, nullptr,
+				IID_ID3D12CommandSignature, reinterpret_cast<void**>(&cmd_signature)));
+			draw_indexed_indirect_signature_ = MakeCOMPtr(cmd_signature);
+		}
+		{
+			D3D12_INDIRECT_ARGUMENT_DESC indirect_param;
+			indirect_param.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
+
+			D3D12_COMMAND_SIGNATURE_DESC cmd_signature_desc;
+			cmd_signature_desc.ByteStride = sizeof(D3D12_DISPATCH_ARGUMENTS);
+			cmd_signature_desc.NumArgumentDescs = 1;
+			cmd_signature_desc.pArgumentDescs = &indirect_param;
+			cmd_signature_desc.NodeMask = 1;
+
+			ID3D12CommandSignature* cmd_signature;
+			TIFHR(d3d_device_->CreateCommandSignature(&cmd_signature_desc, nullptr,
+				IID_ID3D12CommandSignature, reinterpret_cast<void**>(&cmd_signature)));
+			dispatch_indirect_signature_ = MakeCOMPtr(cmd_signature);
+		}
 
 		this->FillRenderDeviceCaps();
 	}
 
-	void D3D12RenderEngine::ClearPSOCache()
+	void D3D12RenderEngine::ClearTempObjs()
 	{
-		cbv_srv_uav_heap_cache_.clear();
+		curr_render_cmd_allocator_->cbv_srv_uav_heap_cache_.clear();
+		curr_render_cmd_allocator_->release_after_sync_buffs_.clear();
 
-		for (auto const & buff : recycle_res_after_sync_)
+		for (auto const & item : curr_render_cmd_allocator_->recycle_after_sync_upload_buffs_)
 		{
-			buff->ResetBufferPool();
+			temp_upload_free_buffs_.emplace(item.second, item.first);
 		}
-		recycle_res_after_sync_.clear();
+		curr_render_cmd_allocator_->recycle_after_sync_upload_buffs_.clear();
+		for (auto const & item : curr_render_cmd_allocator_->recycle_after_sync_readback_buffs_)
+		{
+			temp_readback_free_buffs_.emplace(item.second, item.first);
+		}
+		curr_render_cmd_allocator_->recycle_after_sync_readback_buffs_.clear();
 	}
 
 	void D3D12RenderEngine::CommitResCmd()
 	{
-		TIF(d3d_res_cmd_list_->Close());
+		TIFHR(d3d_res_cmd_list_->Close());
 		ID3D12CommandList* cmd_lists[] = { d3d_res_cmd_list_.get() };
-		d3d_render_cmd_queue_->ExecuteCommandLists(sizeof(cmd_lists) / sizeof(cmd_lists[0]), cmd_lists);
+		d3d_render_cmd_queue_->ExecuteCommandLists(static_cast<uint32_t>(std::size(cmd_lists)), cmd_lists);
 
 		res_cmd_fence_val_ = res_cmd_fence_->Signal(Fence::FT_Render);
 		res_cmd_fence_->Wait(res_cmd_fence_val_);
@@ -443,59 +454,42 @@ namespace KlayGE
 
 	void D3D12RenderEngine::CommitRenderCmd()
 	{
-		TIF(d3d_render_cmd_list_->Close());
+		TIFHR(d3d_render_cmd_list_->Close());
 		ID3D12CommandList* cmd_lists[] = { d3d_render_cmd_list_.get() };
-		d3d_render_cmd_queue_->ExecuteCommandLists(sizeof(cmd_lists) / sizeof(cmd_lists[0]), cmd_lists);
-	}
-
-	void D3D12RenderEngine::CommitComputeCmd()
-	{
-		TIF(d3d_compute_cmd_list_->Close());
-		ID3D12CommandList* cmd_lists[] = { d3d_compute_cmd_list_.get() };
-		d3d_compute_cmd_queue_->ExecuteCommandLists(sizeof(cmd_lists) / sizeof(cmd_lists[0]), cmd_lists);
-	}
-
-	void D3D12RenderEngine::CommitCopyCmd()
-	{
-		TIF(d3d_copy_cmd_list_->Close());
-		ID3D12CommandList* cmd_lists[] = { d3d_copy_cmd_list_.get() };
-		d3d_copy_cmd_queue_->ExecuteCommandLists(sizeof(cmd_lists) / sizeof(cmd_lists[0]), cmd_lists);
+		d3d_render_cmd_queue_->ExecuteCommandLists(static_cast<uint32_t>(std::size(cmd_lists)), cmd_lists);
 	}
 
 	void D3D12RenderEngine::SyncRenderCmd()
 	{
-		render_cmd_fence_val_ = render_cmd_fence_->Signal(Fence::FT_Render);
+		render_cmd_fence_val_ = checked_cast<D3D12Fence&>(*render_cmd_fence_).Signal(d3d_render_cmd_queue_.get());
 		render_cmd_fence_->Wait(render_cmd_fence_val_);
-	}
-
-	void D3D12RenderEngine::SyncComputeCmd()
-	{
-		compute_cmd_fence_val_ = compute_cmd_fence_->Signal(Fence::FT_Compute);
-		compute_cmd_fence_->Wait(compute_cmd_fence_val_);
-	}
-
-	void D3D12RenderEngine::SyncCopyCmd()
-	{
-		copy_cmd_fence_val_ = copy_cmd_fence_->Signal(Fence::FT_Copy);
-		copy_cmd_fence_->Wait(copy_cmd_fence_val_);
 	}
 
 	void D3D12RenderEngine::ResetRenderCmd()
 	{
-		d3d_render_cmd_allocator_->Reset();
-		d3d_render_cmd_list_->Reset(d3d_render_cmd_allocator_.get(), nullptr);
-	}
+		d3d_render_cmd_list_->Reset(this->D3DRenderCmdAllocator(), curr_pso_);
+		d3d_render_cmd_list_->OMSetStencilRef(curr_stencil_ref_);
+		d3d_render_cmd_list_->OMSetBlendFactor(&curr_blend_factor_.r());
+		d3d_render_cmd_list_->RSSetViewports(1, &curr_viewport_);
+		if (curr_graphics_root_signature_ != nullptr)
+		{
+			d3d_render_cmd_list_->SetGraphicsRootSignature(curr_graphics_root_signature_);
+		}
+		if (curr_compute_root_signature_ != nullptr)
+		{
+			d3d_render_cmd_list_->SetComputeRootSignature(curr_compute_root_signature_);
+		}
+		d3d_render_cmd_list_->IASetPrimitiveTopology(curr_topology_);
+		d3d_render_cmd_list_->RSSetScissorRects(1, &curr_scissor_rc_);
+		d3d_render_cmd_list_->SetDescriptorHeaps(curr_num_desc_heaps_, curr_desc_heaps_.data());
+		d3d_render_cmd_list_->IASetVertexBuffers(0, static_cast<uint32_t>(curr_vbvs_.size()), curr_vbvs_.data());
+		d3d_render_cmd_list_->IASetIndexBuffer(&curr_ibv_);
 
-	void D3D12RenderEngine::ResetComputeCmd()
-	{
-		d3d_compute_cmd_allocator_->Reset();
-		d3d_compute_cmd_list_->Reset(d3d_compute_cmd_allocator_.get(), nullptr);
-	}
-
-	void D3D12RenderEngine::ResetCopyCmd()
-	{
-		d3d_copy_cmd_allocator_->Reset();
-		d3d_copy_cmd_list_->Reset(d3d_copy_cmd_allocator_.get(), nullptr);
+		auto fb = checked_cast<D3D12FrameBuffer*>(this->CurFrameBuffer().get());
+		if (fb)
+		{
+			fb->SetRenderTargets();
+		}
 	}
 
 	void D3D12RenderEngine::ResetRenderStates()
@@ -505,21 +499,27 @@ namespace KlayGE
 		BlendStateDesc default_bs_desc;
 
 		RenderFactory& rf = Context::Instance().RenderFactoryInstance();
-		cur_rs_obj_ = rf.MakeRasterizerStateObject(default_rs_desc);
-		cur_dss_obj_ = rf.MakeDepthStencilStateObject(default_dss_desc);
-		cur_bs_obj_ = rf.MakeBlendStateObject(default_bs_desc);
-
-		stencil_ref_cache_ = 0;
-		blend_factor_cache_ = Color(1, 1, 1, 1);
-		sample_mask_cache_ = 0xFFFFFFFF;
+		cur_rs_obj_ = rf.MakeRenderStateObject(default_rs_desc, default_dss_desc, default_bs_desc);
 
 		topology_type_cache_ = RenderLayout::TT_PointList;
-		d3d_render_cmd_list_->IASetPrimitiveTopology(D3D12Mapping::Mapping(topology_type_cache_));
 
-		memset(&viewport_cache_, 0, sizeof(viewport_cache_));
 		memset(&scissor_rc_cache_, 0, sizeof(scissor_rc_cache_));
 
-		this->ClearPSOCache();
+		curr_stencil_ref_ = 0;
+		curr_blend_factor_ = Color(1, 1, 1, 1);
+		memset(&curr_viewport_, 0, sizeof(curr_viewport_));
+		curr_pso_ = nullptr;
+		curr_graphics_root_signature_ = nullptr;
+		curr_compute_root_signature_ = nullptr;
+		curr_scissor_rc_ = { 0, 0, 0, 0 };
+		curr_topology_ = D3D12Mapping::Mapping(topology_type_cache_);
+		curr_num_desc_heaps_ = 0;
+		curr_vbvs_.clear();
+		curr_ibv_ = { 0, 0, DXGI_FORMAT_UNKNOWN };
+
+		d3d_render_cmd_list_->IASetPrimitiveTopology(curr_topology_);
+
+		this->ClearTempObjs();
 	}
 
 	// 设置当前渲染目标
@@ -543,402 +543,112 @@ namespace KlayGE
 			std::vector<D3D12_STREAM_OUTPUT_BUFFER_VIEW> sobv(num_buffs);
 			for (uint32_t i = 0; i < num_buffs; ++ i)
 			{
-				D3D12GraphicsBufferPtr d3d12_buf = checked_pointer_cast<D3D12GraphicsBuffer>(rl->GetVertexStream(i));
+				auto d3d12_buf = checked_pointer_cast<D3D12GraphicsBuffer>(rl->GetVertexStream(i));
 
 				so_buffs_[i] = d3d12_buf;
-				sobv[i].BufferLocation = d3d12_buf->D3DBuffer()->GetGPUVirtualAddress();
+				d3d12_buf->ResetInitCount(0);
+				sobv[i].BufferLocation = d3d12_buf->GPUVirtualAddress();
 				sobv[i].SizeInBytes = d3d12_buf->Size();
 				sobv[i].BufferFilledSizeLocation = sobv[i].BufferLocation + d3d12_buf->CounterOffset();
 			}
 
-			d3d_render_cmd_list_->SOSetTargets(0, static_cast<UINT>(num_buffs), &sobv[0]);
+			d3d_render_cmd_list_->SOSetTargets(0, static_cast<UINT>(num_buffs), sobv.data());
 		}
-		else
+		else if (!so_buffs_.empty())
 		{
-			d3d_render_cmd_list_->SOSetTargets(0, 0, nullptr);
+			num_buffs = static_cast<uint32_t>(so_buffs_.size());
+			std::vector<D3D12_STREAM_OUTPUT_BUFFER_VIEW> sobv(num_buffs);
+			memset(sobv.data(), 0, num_buffs * sizeof(D3D12_STREAM_OUTPUT_BUFFER_VIEW));
+			d3d_render_cmd_list_->SOSetTargets(0, num_buffs, sobv.data());
 
 			so_buffs_.clear();
 		}
 	}
 
-	void D3D12RenderEngine::UpdateRenderPSO(RenderEffect const & effect, RenderTechnique const & tech,
-		RenderPass const & pass, RenderLayout const & rl)
+	void D3D12RenderEngine::UpdateRenderPSO(RenderEffect const & effect, RenderPass const & pass, RenderLayout const & rl,
+		bool has_tessellation)
 	{
-		D3D12RenderLayout const & d3d12_rl = *checked_cast<D3D12RenderLayout const *>(&rl);
+		auto const& so = checked_cast<D3D12ShaderObject const&>(*pass.GetShaderObject(effect));
+		auto const& rso = checked_cast<D3D12RenderStateObject const&>(*pass.GetRenderStateObject());
 
-		D3D12ShaderObjectPtr so = checked_pointer_cast<D3D12ShaderObject>(pass.GetShaderObject(effect));
+		auto pso = rso.RetrieveGraphicsPSO(rl, so, *this->CurFrameBuffer(), has_tessellation);
+		this->SetPipelineState(pso);
 
-		D3D12_GRAPHICS_PIPELINE_STATE_DESC pso_desc;
-		pso_desc.pRootSignature = so->RootSignature().get();
-		{
-			auto const & blob = so->ShaderBlob(ShaderObject::ST_VertexShader);
-			if (blob && !blob->empty())
-			{
-				pso_desc.VS.pShaderBytecode = blob->data();
-				pso_desc.VS.BytecodeLength = static_cast<UINT>(blob->size());
-			}
-			else
-			{
-				pso_desc.VS.pShaderBytecode = nullptr;
-				pso_desc.VS.BytecodeLength = 0;
-			}
-		}
-		{
-			auto const & blob = so->ShaderBlob(ShaderObject::ST_PixelShader);
-			if (blob && !blob->empty())
-			{
-				pso_desc.PS.pShaderBytecode = blob->data();
-				pso_desc.PS.BytecodeLength = static_cast<UINT>(blob->size());
-			}
-			else
-			{
-				pso_desc.PS.pShaderBytecode = nullptr;
-				pso_desc.PS.BytecodeLength = 0;
-			}
-		}
-		{
-			auto const & blob = so->ShaderBlob(ShaderObject::ST_DomainShader);
-			if (blob && !blob->empty())
-			{
-				pso_desc.DS.pShaderBytecode = blob->data();
-				pso_desc.DS.BytecodeLength = static_cast<UINT>(blob->size());
-			}
-			else
-			{
-				pso_desc.DS.pShaderBytecode = nullptr;
-				pso_desc.DS.BytecodeLength = 0;
-			}
-		}
-		{
-			auto const & blob = so->ShaderBlob(ShaderObject::ST_HullShader);
-			if (blob && !blob->empty())
-			{
-				pso_desc.HS.pShaderBytecode = blob->data();
-				pso_desc.HS.BytecodeLength = static_cast<UINT>(blob->size());
-			}
-			else
-			{
-				pso_desc.HS.pShaderBytecode = nullptr;
-				pso_desc.HS.BytecodeLength = 0;
-			}
-		}
-		{
-			auto const & blob = so->ShaderBlob(ShaderObject::ST_GeometryShader);
-			if (blob && !blob->empty())
-			{
-				pso_desc.GS.pShaderBytecode = blob->data();
-				pso_desc.GS.BytecodeLength = static_cast<UINT>(blob->size());
-			}
-			else
-			{
-				pso_desc.GS.pShaderBytecode = nullptr;
-				pso_desc.GS.BytecodeLength = 0;
-			}
-		}
+		auto root_signature = so.RootSignature();
+		this->SetGraphicsRootSignature(root_signature);
 
-		auto const & so_decls = so->SODecl();
-		std::vector<UINT> so_strides(so_decls.size());
-		for (size_t i = 0; i < so_decls.size(); ++ i)
+		D3D12_RECT scissor_rc;
+		if (pass.GetRenderStateObject()->GetRasterizerStateDesc().scissor_enable)
 		{
-			so_strides[i] = so_decls[i].ComponentCount * sizeof(float);
-		}
-		pso_desc.StreamOutput.pSODeclaration = so_decls.empty() ? nullptr : &so_decls[0];
-		pso_desc.StreamOutput.NumEntries = static_cast<UINT>(so_decls.size());
-		pso_desc.StreamOutput.pBufferStrides = so_strides.empty() ? nullptr : &so_strides[0];
-		pso_desc.StreamOutput.NumStrides = static_cast<UINT>(so_strides.size());
-		pso_desc.StreamOutput.RasterizedStream = so->RasterizedStream();
-
-		pso_desc.BlendState = checked_pointer_cast<D3D12BlendStateObject>(pass.GetBlendStateObject())->D3DDesc();
-		pso_desc.SampleMask = sample_mask_cache_;
-		pso_desc.RasterizerState = checked_pointer_cast<D3D12RasterizerStateObject>(pass.GetRasterizerStateObject())->D3DDesc();
-		pso_desc.DepthStencilState = checked_pointer_cast<D3D12DepthStencilStateObject>(pass.GetDepthStencilStateObject())->D3DDesc();
-		pso_desc.InputLayout.pInputElementDescs = d3d12_rl.InputElementDesc().empty() ? nullptr : &d3d12_rl.InputElementDesc()[0];
-		pso_desc.InputLayout.NumElements = static_cast<UINT>(d3d12_rl.InputElementDesc().size());
-		pso_desc.IBStripCutValue = (EF_R16UI == rl.IndexStreamFormat())
-			? D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFF : D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFFFFFF;
-
-		RenderLayout::topology_type tt = rl.TopologyType();
-		if (tech.HasTessellation())
-		{
-			switch (tt)
-			{
-			case RenderLayout::TT_PointList:
-				tt = RenderLayout::TT_1_Ctrl_Pt_PatchList;
-				break;
-
-			case RenderLayout::TT_LineList:
-				tt = RenderLayout::TT_2_Ctrl_Pt_PatchList;
-				break;
-
-			case RenderLayout::TT_TriangleList:
-				tt = RenderLayout::TT_3_Ctrl_Pt_PatchList;
-				break;
-
-			default:
-				break;
-			}
-		}
-		pso_desc.PrimitiveTopologyType = D3D12Mapping::MappingPriTopoType(tt);
-
-		pso_desc.NumRenderTargets = 0;
-		FrameBufferPtr const & fb = this->CurFrameBuffer();
-		for (int i = sizeof(pso_desc.RTVFormats) / sizeof(pso_desc.RTVFormats[0]) - 1; i >= 0; -- i)
-		{
-			if (fb->Attached(FrameBuffer::ATT_Color0 + i))
-			{
-				pso_desc.NumRenderTargets = i + 1;
-				break;
-			}
-		}
-		for (uint32_t i = 0; i < pso_desc.NumRenderTargets; ++ i)
-		{
-			pso_desc.RTVFormats[i] = D3D12Mapping::MappingFormat(fb->Attached(FrameBuffer::ATT_Color0 + i)->Format());
-		}
-		for (uint32_t i = pso_desc.NumRenderTargets; i < sizeof(pso_desc.RTVFormats) / sizeof(pso_desc.RTVFormats[0]); ++ i)
-		{
-			pso_desc.RTVFormats[i] = DXGI_FORMAT_UNKNOWN;
-		}
-		if (fb->Attached(FrameBuffer::ATT_DepthStencil))
-		{
-			pso_desc.DSVFormat = D3D12Mapping::MappingFormat(fb->Attached(FrameBuffer::ATT_DepthStencil)->Format());
+			scissor_rc = scissor_rc_cache_;
 		}
 		else
 		{
-			pso_desc.DSVFormat = DXGI_FORMAT_UNKNOWN;
-		}
-		pso_desc.SampleDesc.Count = 1;
-		pso_desc.SampleDesc.Quality = 0;
-		pso_desc.NodeMask = 0;
-		pso_desc.CachedPSO.pCachedBlob = nullptr;
-		pso_desc.CachedPSO.CachedBlobSizeInBytes = 0;
-		pso_desc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
-
-		ID3D12PipelineStatePtr pso = this->CreateRenderPSO(pso_desc);
-
-		d3d_render_cmd_list_->SetPipelineState(pso.get());
-		d3d_render_cmd_list_->SetGraphicsRootSignature(so->RootSignature().get());
-
-		if (pass.GetRasterizerStateObject()->GetDesc().scissor_enable)
-		{
-			d3d_render_cmd_list_->RSSetScissorRects(1, &scissor_rc_cache_);
-		}
-		else
-		{
-			D3D12_RECT rc =
+			scissor_rc =
 			{
-				static_cast<LONG>(viewport_cache_.TopLeftX),
-				static_cast<LONG>(viewport_cache_.TopLeftY),
-				static_cast<LONG>(viewport_cache_.TopLeftX + viewport_cache_.Width),
-				static_cast<LONG>(viewport_cache_.TopLeftY + viewport_cache_.Height)
+				static_cast<LONG>(curr_viewport_.TopLeftX),
+				static_cast<LONG>(curr_viewport_.TopLeftY),
+				static_cast<LONG>(curr_viewport_.TopLeftX + curr_viewport_.Width),
+				static_cast<LONG>(curr_viewport_.TopLeftY + curr_viewport_.Height)
 			};
-			d3d_render_cmd_list_->RSSetScissorRects(1, &rc);
 		}
+		this->RSSetScissorRects(scissor_rc);
 
-		size_t num_handle = 0;
-		for (uint32_t i = 0; i < ShaderObject::ST_NumShaderTypes; ++ i)
-		{
-			ShaderObject::ShaderType st = static_cast<ShaderObject::ShaderType>(i);
-			num_handle += so->SRVs(st).size() + so->UAVs(st).size();
-		}
-
-		std::array<ID3D12DescriptorHeap*, 2> heaps;
-		uint32_t num_heaps = 0;
-		ID3D12DescriptorHeapPtr cbv_srv_uav_heap;
-		ID3D12DescriptorHeapPtr sampler_heap = so->SamplerHeap();
-		if (num_handle > 0)
-		{
-			size_t hash_val = 0;
-			for (uint32_t i = 0; i < ShaderObject::ST_NumShaderTypes; ++ i)
-			{
-				ShaderObject::ShaderType st = static_cast<ShaderObject::ShaderType>(i);
-				HashCombine(hash_val, st);
-				HashCombine(hash_val, so->SRVs(st).size());
-				if (!so->SRVs(st).empty())
-				{
-					HashRange(hash_val, so->SRVs(st).begin(), so->SRVs(st).end());
-				}
-			}
-			for (uint32_t i = 0; i < ShaderObject::ST_NumShaderTypes; ++ i)
-			{
-				ShaderObject::ShaderType st = static_cast<ShaderObject::ShaderType>(i);
-				HashCombine(hash_val, st);
-				HashCombine(hash_val, so->UAVs(st).size());
-				if (!so->UAVs(st).empty())
-				{
-					HashRange(hash_val, so->UAVs(st).begin(), so->UAVs(st).end());
-				}
-			}
-
-			auto iter = cbv_srv_uav_heaps_.find(hash_val);
-			if (iter == cbv_srv_uav_heaps_.end())
-			{
-				cbv_srv_uav_heap = this->CreateDynamicCBVSRVUAVDescriptorHeap(static_cast<uint32_t>(num_handle));
-				cbv_srv_uav_heaps_.emplace(hash_val, cbv_srv_uav_heap);
-			}
-			else
-			{
-				cbv_srv_uav_heap = iter->second;
-			}
-			heaps[num_heaps] = cbv_srv_uav_heap.get();
-			++ num_heaps;
-		}
-		if (sampler_heap)
-		{
-			heaps[num_heaps] = sampler_heap.get();
-			++ num_heaps;
-		}
-
-		if (num_heaps > 0)
-		{
-			d3d_render_cmd_list_->SetDescriptorHeaps(num_heaps, &heaps[0]);
-		}
-
-		uint32_t root_param_index = 0;
-		for (uint32_t i = 0; i < ShaderObject::ST_NumShaderTypes; ++ i)
-		{
-			ShaderObject::ShaderType st = static_cast<ShaderObject::ShaderType>(i);
-			if (!so->CBuffers(st).empty())
-			{
-				for (uint32_t j = 0; j < so->CBuffers(st).size(); ++ j)
-				{
-					ID3D12ResourcePtr const & buff = checked_cast<D3D12GraphicsBuffer*>(so->CBuffers(st)[j])->D3DBuffer();
-					if (buff)
-					{
-						d3d_render_cmd_list_->SetGraphicsRootConstantBufferView(root_param_index, buff->GetGPUVirtualAddress());
-
-						++ root_param_index;
-					}
-					else
-					{
-						d3d_render_cmd_list_->SetGraphicsRootConstantBufferView(root_param_index, 0);
-					}
-				}
-			}
-		}
-		if (cbv_srv_uav_heap)
-		{
-			UINT const cbv_srv_uav_desc_size = d3d_device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-			D3D12_CPU_DESCRIPTOR_HANDLE cpu_cbv_srv_uav_handle = cbv_srv_uav_heap->GetCPUDescriptorHandleForHeapStart();
-			D3D12_GPU_DESCRIPTOR_HANDLE gpu_cbv_srv_uav_handle = cbv_srv_uav_heap->GetGPUDescriptorHandleForHeapStart();
-
-			for (uint32_t i = 0; i < ShaderObject::ST_NumShaderTypes; ++ i)
-			{
-				ShaderObject::ShaderType st = static_cast<ShaderObject::ShaderType>(i);
-				if (!so->SRVs(st).empty())
-				{
-					d3d_render_cmd_list_->SetGraphicsRootDescriptorTable(root_param_index, gpu_cbv_srv_uav_handle);
-
-					for (uint32_t j = 0; j < so->SRVs(st).size(); ++ j)
-					{
-						d3d_device_->CopyDescriptorsSimple(1, cpu_cbv_srv_uav_handle,
-							std::get<0>(so->SRVSrcs(st)[j]) ? so->SRVs(st)[j]->Handle() : null_srv_handle_,
-							D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-						cpu_cbv_srv_uav_handle.ptr += cbv_srv_uav_desc_size;
-						gpu_cbv_srv_uav_handle.ptr += cbv_srv_uav_desc_size;
-					}
-
-					++ root_param_index;
-				}
-			}
-			for (uint32_t i = 0; i < ShaderObject::ST_NumShaderTypes; ++ i)
-			{
-				ShaderObject::ShaderType st = static_cast<ShaderObject::ShaderType>(i);
-				if (!so->UAVs(st).empty())
-				{
-					d3d_render_cmd_list_->SetGraphicsRootDescriptorTable(root_param_index, gpu_cbv_srv_uav_handle);
-
-					for (uint32_t j = 0; j < so->UAVs(st).size(); ++ j)
-					{
-						d3d_device_->CopyDescriptorsSimple(1, cpu_cbv_srv_uav_handle,
-							so->UAVSrcs(st)[j].first ? so->UAVs(st)[j]->Handle() : null_uav_handle_,
-							D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-						cpu_cbv_srv_uav_handle.ptr += cbv_srv_uav_desc_size;
-						gpu_cbv_srv_uav_handle.ptr += cbv_srv_uav_desc_size;
-					}
-
-					++ root_param_index;
-				}
-			}
-		}
-
-		if (sampler_heap)
-		{
-			UINT const sampler_desc_size = d3d_device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
-
-			D3D12_GPU_DESCRIPTOR_HANDLE gpu_sampler_handle = sampler_heap->GetGPUDescriptorHandleForHeapStart();
-
-			for (uint32_t i = 0; i < ShaderObject::ST_NumShaderTypes; ++ i)
-			{
-				ShaderObject::ShaderType st = static_cast<ShaderObject::ShaderType>(i);
-				if (!so->Samplers(st).empty())
-				{
-					d3d_render_cmd_list_->SetGraphicsRootDescriptorTable(root_param_index, gpu_sampler_handle);
-
-					gpu_sampler_handle.ptr += sampler_desc_size * so->Samplers(st).size();
-
-					++ root_param_index;
-				}
-			}
-		}
+		this->UpdateCbvSrvUavSamplerHeaps(effect, so);
 	}
 
 	void D3D12RenderEngine::UpdateComputePSO(RenderEffect const & effect, RenderPass const & pass)
 	{
-		D3D12ShaderObjectPtr so = checked_pointer_cast<D3D12ShaderObject>(pass.GetShaderObject(effect));
+		auto const& so = checked_cast<D3D12ShaderObject const&>(*pass.GetShaderObject(effect));
+		auto const& rso = checked_cast<D3D12RenderStateObject const&>(*pass.GetRenderStateObject());
 
-		D3D12_COMPUTE_PIPELINE_STATE_DESC pso_desc;
-		pso_desc.pRootSignature = so->RootSignature().get();
-		{
-			auto const & blob = so->ShaderBlob(ShaderObject::ST_ComputeShader);
-			if (blob && !blob->empty())
-			{
-				pso_desc.CS.pShaderBytecode = blob->data();
-				pso_desc.CS.BytecodeLength = static_cast<UINT>(blob->size());
-			}
-			else
-			{
-				pso_desc.CS.pShaderBytecode = nullptr;
-				pso_desc.CS.BytecodeLength = 0;
-			}
-		}
-		pso_desc.NodeMask = 0;
-		pso_desc.CachedPSO.pCachedBlob = nullptr;
-		pso_desc.CachedPSO.CachedBlobSizeInBytes = 0;
-		pso_desc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
+		auto pso = rso.RetrieveComputePSO(so);
+		this->SetPipelineState(pso);
 
-		ID3D12PipelineStatePtr pso = this->CreateComputePSO(pso_desc);
+		auto root_signature = so.RootSignature();
+		this->SetComputeRootSignature(root_signature);
 
-		d3d_compute_cmd_list_->SetPipelineState(pso.get());
-		d3d_compute_cmd_list_->SetComputeRootSignature(so->RootSignature().get());
+		this->UpdateCbvSrvUavSamplerHeaps(effect, so);
+	}
 
-		ShaderObject::ShaderType const st = ShaderObject::ST_ComputeShader;
-		size_t const num_handle = so->SRVs(st).size() + so->UAVs(st).size();
+	void D3D12RenderEngine::UpdateCbvSrvUavSamplerHeaps(RenderEffect const& effect, ShaderObject const& so)
+	{
+		auto const& d3d12_so = checked_cast<D3D12ShaderObject const&>(so);
+
+		uint32_t const num_handles = d3d12_so.NumHandles();
 
 		std::array<ID3D12DescriptorHeap*, 2> heaps;
 		uint32_t num_heaps = 0;
 		ID3D12DescriptorHeapPtr cbv_srv_uav_heap;
-		ID3D12DescriptorHeapPtr sampler_heap = so->SamplerHeap();
-		if (num_handle > 0)
+		auto sampler_heap = d3d12_so.SamplerHeap();
+		if (num_handles > 0)
 		{
 			size_t hash_val = 0;
-			HashCombine(hash_val, st);
-			HashCombine(hash_val, so->SRVs(st).size());
-			if (!so->SRVs(st).empty())
+			for (uint32_t i = 0; i < NumShaderStages; ++i)
 			{
-				HashRange(hash_val, so->SRVs(st).begin(), so->SRVs(st).end());
+				ShaderStage const stage = static_cast<ShaderStage>(i);
+				HashCombine(hash_val, stage);
+				HashCombine(hash_val, d3d12_so.SRVs(stage).size());
+				if (!d3d12_so.SRVs(stage).empty())
+				{
+					HashRange(hash_val, d3d12_so.SRVs(stage).begin(), d3d12_so.SRVs(stage).end());
+				}
 			}
-			HashCombine(hash_val, st);
-			HashCombine(hash_val, so->UAVs(st).size());
-			if (!so->UAVs(st).empty())
+			for (uint32_t i = 0; i < NumShaderStages; ++i)
 			{
-				HashRange(hash_val, so->UAVs(st).begin(), so->UAVs(st).end());
+				ShaderStage const stage = static_cast<ShaderStage>(i);
+				HashCombine(hash_val, stage);
+				HashCombine(hash_val, d3d12_so.UAVs(stage).size());
+				if (!d3d12_so.UAVs(stage).empty())
+				{
+					HashRange(hash_val, d3d12_so.UAVs(stage).begin(), d3d12_so.UAVs(stage).end());
+				}
 			}
 
 			auto iter = cbv_srv_uav_heaps_.find(hash_val);
 			if (iter == cbv_srv_uav_heaps_.end())
 			{
-				cbv_srv_uav_heap = this->CreateDynamicCBVSRVUAVDescriptorHeap(static_cast<uint32_t>(num_handle));
+				cbv_srv_uav_heap = this->CreateDynamicCBVSRVUAVDescriptorHeap(num_handles);
 				cbv_srv_uav_heaps_.emplace(hash_val, cbv_srv_uav_heap);
 			}
 			else
@@ -950,85 +660,148 @@ namespace KlayGE
 		}
 		if (sampler_heap)
 		{
-			heaps[num_heaps] = sampler_heap.get();
+			heaps[num_heaps] = sampler_heap;
 			++ num_heaps;
 		}
 
-		if (num_heaps > 0)
-		{
-			d3d_compute_cmd_list_->SetDescriptorHeaps(num_heaps, &heaps[0]);
-		}
+		this->SetDescriptorHeaps(MakeArrayRef(heaps.data(), num_heaps));
 
 		uint32_t root_param_index = 0;
-		if (!so->CBuffers(st).empty())
+		for (uint32_t i = 0; i < NumShaderStages; ++i)
 		{
-			for (uint32_t j = 0; j < so->CBuffers(st).size(); ++ j)
+			ShaderStage const stage = static_cast<ShaderStage>(i);
+			auto const cbuffers = d3d12_so.CBuffers(effect, stage);
+			for (auto cbuffer : cbuffers)
 			{
-				ID3D12ResourcePtr const & buff = checked_cast<D3D12GraphicsBuffer*>(so->CBuffers(st)[j])->D3DBuffer();
-				if (buff)
+				D3D12_GPU_VIRTUAL_ADDRESS gpu_vaddr;
+				if (cbuffer != nullptr)
 				{
-					d3d_compute_cmd_list_->SetComputeRootConstantBufferView(root_param_index, buff->GetGPUVirtualAddress());
-
-					++ root_param_index;
+					gpu_vaddr = checked_cast<D3D12GraphicsBuffer&>(*cbuffer).GPUVirtualAddress();
 				}
 				else
 				{
-					d3d_compute_cmd_list_->SetComputeRootConstantBufferView(root_param_index, 0);
+					gpu_vaddr = 0;
 				}
+
+				if (stage != ShaderStage::Compute)
+				{
+					d3d_render_cmd_list_->SetGraphicsRootConstantBufferView(root_param_index, gpu_vaddr);
+				}
+				else
+				{
+					d3d_render_cmd_list_->SetComputeRootConstantBufferView(root_param_index, gpu_vaddr);
+				}
+				++root_param_index;
 			}
 		}
+
+		uint32_t const HANDLES_PER_COPY = 16;
+		std::array<D3D12_CPU_DESCRIPTOR_HANDLE, HANDLES_PER_COPY> src_handles;
+		std::array<D3D12_CPU_DESCRIPTOR_HANDLE, HANDLES_PER_COPY> dst_handles;
+		std::array<uint32_t, HANDLES_PER_COPY> handle_sizes;
+		handle_sizes.fill(1);
 		if (cbv_srv_uav_heap)
 		{
-			UINT const cbv_srv_uav_desc_size = d3d_device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
 			D3D12_CPU_DESCRIPTOR_HANDLE cpu_cbv_srv_uav_handle = cbv_srv_uav_heap->GetCPUDescriptorHandleForHeapStart();
 			D3D12_GPU_DESCRIPTOR_HANDLE gpu_cbv_srv_uav_handle = cbv_srv_uav_heap->GetGPUDescriptorHandleForHeapStart();
 
-			if (!so->SRVs(st).empty())
+			for (uint32_t i = 0; i < NumShaderStages; ++i)
 			{
-				d3d_compute_cmd_list_->SetComputeRootDescriptorTable(root_param_index, gpu_cbv_srv_uav_handle);
-
-				for (uint32_t j = 0; j < so->SRVs(st).size(); ++ j)
+				ShaderStage const stage = static_cast<ShaderStage>(i);
+				auto const & srvs = d3d12_so.SRVs(stage);
+				if (!srvs.empty())
 				{
-					d3d_device_->CopyDescriptorsSimple(1, cpu_cbv_srv_uav_handle,
-						std::get<0>(so->SRVSrcs(st)[j]) ? so->SRVs(st)[j]->Handle() : null_srv_handle_,
-						D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-					cpu_cbv_srv_uav_handle.ptr += cbv_srv_uav_desc_size;
-					gpu_cbv_srv_uav_handle.ptr += cbv_srv_uav_desc_size;
-				}
+					if (stage != ShaderStage::Compute)
+					{
+						d3d_render_cmd_list_->SetGraphicsRootDescriptorTable(root_param_index, gpu_cbv_srv_uav_handle);
+					}
+					else
+					{
+						d3d_render_cmd_list_->SetComputeRootDescriptorTable(root_param_index, gpu_cbv_srv_uav_handle);
+					}
 
-				++ root_param_index;
+					uint32_t const num_srvs = static_cast<uint32_t>(srvs.size());
+					for (uint32_t j = 0; j < num_srvs; j += HANDLES_PER_COPY)
+					{
+						uint32_t const n = std::min(HANDLES_PER_COPY, num_srvs - j);
+						for (uint32_t k = 0; k < n; ++ k)
+						{
+							auto srv = srvs[j + k];
+							src_handles[k] = srv ? srv->Handle() : null_srv_handle_;
+							dst_handles[k] = cpu_cbv_srv_uav_handle;
+							cpu_cbv_srv_uav_handle.ptr += cbv_srv_uav_desc_size_;
+						}
+						d3d_device_->CopyDescriptors(n, dst_handles.data(), handle_sizes.data(),
+							n, src_handles.data(), handle_sizes.data(),
+							D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+					}
+
+					gpu_cbv_srv_uav_handle.ptr += cbv_srv_uav_desc_size_ * num_srvs;
+
+					++ root_param_index;
+				}
 			}
-			if (!so->UAVs(st).empty())
+			for (uint32_t i = 0; i < NumShaderStages; ++i)
 			{
-				d3d_compute_cmd_list_->SetComputeRootDescriptorTable(root_param_index, gpu_cbv_srv_uav_handle);
-
-				for (uint32_t j = 0; j < so->UAVs(st).size(); ++ j)
+				ShaderStage const stage = static_cast<ShaderStage>(i);
+				auto const & uavs = d3d12_so.UAVs(stage);
+				if (!uavs.empty())
 				{
-					d3d_device_->CopyDescriptorsSimple(1, cpu_cbv_srv_uav_handle, 
-						so->UAVSrcs(st)[j].first ? so->UAVs(st)[j]->Handle() : null_uav_handle_,
-						D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-					cpu_cbv_srv_uav_handle.ptr += cbv_srv_uav_desc_size;
-					gpu_cbv_srv_uav_handle.ptr += cbv_srv_uav_desc_size;
-				}
+					if (stage != ShaderStage::Compute)
+					{
+						d3d_render_cmd_list_->SetGraphicsRootDescriptorTable(root_param_index, gpu_cbv_srv_uav_handle);
+					}
+					else
+					{
+						d3d_render_cmd_list_->SetComputeRootDescriptorTable(root_param_index, gpu_cbv_srv_uav_handle);
+					}
 
-				++ root_param_index;
+					uint32_t const num_uavs = static_cast<uint32_t>(uavs.size());
+					for (uint32_t j = 0; j < num_uavs; j += HANDLES_PER_COPY)
+					{
+						uint32_t const n = std::min(HANDLES_PER_COPY, num_uavs - j);
+						for (uint32_t k = 0; k < n; ++ k)
+						{
+							auto uav = uavs[j + k];
+							src_handles[k] = uav ? uav->Handle() : null_uav_handle_;
+							dst_handles[k] = cpu_cbv_srv_uav_handle;
+							cpu_cbv_srv_uav_handle.ptr += cbv_srv_uav_desc_size_;
+						}
+						d3d_device_->CopyDescriptors(n, dst_handles.data(), handle_sizes.data(),
+							n, src_handles.data(), handle_sizes.data(),
+							D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+					}
+
+					gpu_cbv_srv_uav_handle.ptr += cbv_srv_uav_desc_size_ * num_uavs;
+
+					++ root_param_index;
+				}
 			}
 		}
 
 		if (sampler_heap)
 		{
-			UINT const sampler_desc_size = d3d_device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
-
 			D3D12_GPU_DESCRIPTOR_HANDLE gpu_sampler_handle = sampler_heap->GetGPUDescriptorHandleForHeapStart();
 
-			if (!so->Samplers(st).empty())
+			for (uint32_t i = 0; i < NumShaderStages; ++ i)
 			{
-				d3d_compute_cmd_list_->SetComputeRootDescriptorTable(root_param_index, gpu_sampler_handle);
+				ShaderStage const stage = static_cast<ShaderStage>(i);
+				auto const & samplers = d3d12_so.Samplers(stage);
+				if (!samplers.empty())
+				{
+					if (stage != ShaderStage::Compute)
+					{
+						d3d_render_cmd_list_->SetGraphicsRootDescriptorTable(root_param_index, gpu_sampler_handle);
+					}
+					else
+					{
+						d3d_render_cmd_list_->SetComputeRootDescriptorTable(root_param_index, gpu_sampler_handle);
+					}
 
-				gpu_sampler_handle.ptr += sampler_desc_size * so->Samplers(st).size();
+					gpu_sampler_handle.ptr += sampler_desc_size_ * samplers.size();
 
-				++ root_param_index;
+					++ root_param_index;
+				}
 			}
 		}
 	}
@@ -1037,93 +810,55 @@ namespace KlayGE
 	/////////////////////////////////////////////////////////////////////////////////
 	void D3D12RenderEngine::DoRender(RenderEffect const & effect, RenderTechnique const & tech, RenderLayout const & rl)
 	{
-		if (last_engine_type_ != ET_Render)
-		{
-			this->ForceCPUGPUSync();
-		}
-
-		D3D12FrameBuffer& fb = *checked_cast<D3D12FrameBuffer*>(this->CurFrameBuffer().get());
-		fb.SetRenderTargets();
+		auto& fb = checked_cast<D3D12FrameBuffer&>(*this->CurFrameBuffer());
 		fb.BindBarrier();
-
-		d3d_render_cmd_list_->OMSetStencilRef(stencil_ref_cache_);
-		d3d_render_cmd_list_->OMSetBlendFactor(&blend_factor_cache_.r());
-
-		std::vector<D3D12_RESOURCE_BARRIER> barriers;
 
 		for (uint32_t i = 0; i < so_buffs_.size(); ++ i)
 		{
-			D3D12GraphicsBuffer& d3dvb = *checked_cast<D3D12GraphicsBuffer*>(so_buffs_[i].get());
-
-			D3D12_RESOURCE_BARRIER barrier;
-			barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-			barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-			barrier.Transition.Subresource = 0;
-			if (d3dvb.UpdateResourceBarrier(barrier, D3D12_RESOURCE_STATE_STREAM_OUT))
-			{
-				barriers.push_back(barrier);
-			}
+			auto& d3dvb = checked_cast<D3D12GraphicsBuffer&>(*so_buffs_[i]);
+			d3dvb.UpdateResourceBarrier(d3d_render_cmd_list_.get(), 0, D3D12_RESOURCE_STATE_STREAM_OUT);
 		}
 
 		uint32_t const num_vertex_streams = rl.NumVertexStreams();
 
 		for (uint32_t i = 0; i < num_vertex_streams; ++ i)
 		{
-			GraphicsBufferPtr const & stream = rl.GetVertexStream(i);
-
-			D3D12GraphicsBuffer& d3dvb = *checked_cast<D3D12GraphicsBuffer*>(stream.get());
+			auto& d3dvb = checked_cast<D3D12GraphicsBuffer&>(*rl.GetVertexStream(i));
 			if (!(d3dvb.AccessHint() & (EAH_CPU_Read | EAH_CPU_Write)))
 			{
-				D3D12_RESOURCE_BARRIER barrier;
-				barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-				barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-				barrier.Transition.Subresource = 0;
-				if (d3dvb.UpdateResourceBarrier(barrier, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER))
-				{
-					barriers.push_back(barrier);
-				}
+				d3dvb.UpdateResourceBarrier(d3d_render_cmd_list_.get(), 0, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
 			}
 		}
 		if (rl.InstanceStream())
 		{
-			GraphicsBufferPtr const & stream = rl.InstanceStream();
-
-			D3D12GraphicsBuffer& d3dvb = *checked_cast<D3D12GraphicsBuffer*>(stream.get());
+			auto& d3dvb = checked_cast<D3D12GraphicsBuffer&>(*rl.InstanceStream().get());
 			if (!(d3dvb.AccessHint() & (EAH_CPU_Read | EAH_CPU_Write)))
 			{
-				D3D12_RESOURCE_BARRIER barrier;
-				barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-				barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-				barrier.Transition.Subresource = 0;
-				if (d3dvb.UpdateResourceBarrier(barrier, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER))
-				{
-					barriers.push_back(barrier);
-				}
+				d3dvb.UpdateResourceBarrier(d3d_render_cmd_list_.get(), 0, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
 			}
 		}
 
 		if (rl.UseIndices())
 		{
-			D3D12GraphicsBuffer& ib = *checked_cast<D3D12GraphicsBuffer*>(rl.GetIndexStream().get());
+			auto& ib = checked_cast<D3D12GraphicsBuffer&>(*rl.GetIndexStream());
 			if (!(ib.AccessHint() & (EAH_CPU_Read | EAH_CPU_Write)))
 			{
-				D3D12_RESOURCE_BARRIER barrier;
-				barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-				barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-				barrier.Transition.Subresource = 0;
-				if (ib.UpdateResourceBarrier(barrier, D3D12_RESOURCE_STATE_INDEX_BUFFER))
-				{
-					barriers.push_back(barrier);
-				}
+				ib.UpdateResourceBarrier(d3d_render_cmd_list_.get(), 0, D3D12_RESOURCE_STATE_INDEX_BUFFER);
 			}
 		}
 
-		if (!barriers.empty())
+		if (rl.GetIndirectArgs())
 		{
-			d3d_render_cmd_list_->ResourceBarrier(static_cast<UINT>(barriers.size()), &barriers[0]);
+			auto& arg_buff = checked_cast<D3D12GraphicsBuffer&>(*rl.GetIndirectArgs());
+			if (!(arg_buff.AccessHint() & (EAH_CPU_Read | EAH_CPU_Write)))
+			{
+				arg_buff.UpdateResourceBarrier(d3d_render_cmd_list_.get(), 0, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
+			}
 		}
 
-		checked_cast<D3D12RenderLayout const *>(&rl)->Active();
+		this->FlushResourceBarriers(d3d_render_cmd_list_.get());
+
+		checked_cast<D3D12RenderLayout const&>(rl).Active();
 
 		uint32_t const vertex_count = static_cast<uint32_t>(rl.UseIndices() ? rl.NumIndices() : rl.NumVertices());
 
@@ -1148,11 +883,7 @@ namespace KlayGE
 				break;
 			}
 		}
-		if (topology_type_cache_ != tt)
-		{
-			topology_type_cache_ = tt;
-		}
-		d3d_render_cmd_list_->IASetPrimitiveTopology(D3D12Mapping::Mapping(tt));
+		this->IASetPrimitiveTopology(tt);
 
 		uint32_t prim_count;
 		switch (tt)
@@ -1189,8 +920,7 @@ namespace KlayGE
 			}
 			else
 			{
-				BOOST_ASSERT(false);
-				prim_count = 0;
+				KFL_UNREACHABLE("Invalid topology type");
 			}
 			break;
 		}
@@ -1201,10 +931,12 @@ namespace KlayGE
 		num_vertices_just_rendered_ += num_instances * vertex_count;
 
 		uint32_t const num_passes = tech.NumPasses();
+		bool const has_tessellation = tech.HasTessellation();
 		GraphicsBufferPtr const & indirect_buff = rl.GetIndirectArgs();
 		if (indirect_buff)
 		{
-			// TODO: ExecuteIndirect's first 2 parameters can't be right
+			auto* arg_buff = checked_cast<D3D12GraphicsBuffer const&>(*indirect_buff).D3DResource().get();
+
 			if (rl.UseIndices())
 			{
 				for (uint32_t i = 0; i < num_passes; ++ i)
@@ -1212,10 +944,9 @@ namespace KlayGE
 					auto& pass = tech.Pass(i);
 
 					pass.Bind(effect);
-					this->UpdateRenderPSO(effect, tech, pass, rl);
-					d3d_render_cmd_list_->ExecuteIndirect(nullptr, 0,
-						checked_cast<D3D12GraphicsBuffer const *>(indirect_buff.get())->D3DBuffer().get(),
-						rl.IndirectArgsOffset(), nullptr, 0);
+					this->UpdateRenderPSO(effect, pass, rl, has_tessellation);
+					d3d_render_cmd_list_->ExecuteIndirect(draw_indexed_indirect_signature_.get(), 1,
+						arg_buff, rl.IndirectArgsOffset(), nullptr, 0);
 					pass.Unbind(effect);
 				}
 			}
@@ -1226,11 +957,9 @@ namespace KlayGE
 					auto& pass = tech.Pass(i);
 
 					pass.Bind(effect);
-					this->UpdateRenderPSO(effect, tech, pass, rl);
-					// TODO: ExecuteIndirect's first 2 parameters can't be right
-					d3d_render_cmd_list_->ExecuteIndirect(nullptr, 0,
-						checked_cast<D3D12GraphicsBuffer const *>(indirect_buff.get())->D3DBuffer().get(),
-						rl.IndirectArgsOffset(), nullptr, 0);
+					this->UpdateRenderPSO(effect, pass, rl, has_tessellation);
+					d3d_render_cmd_list_->ExecuteIndirect(draw_indirect_signature_.get(), 1,
+						arg_buff, rl.IndirectArgsOffset(), nullptr, 0);
 					pass.Unbind(effect);
 				}
 			}
@@ -1245,7 +974,7 @@ namespace KlayGE
 					auto& pass = tech.Pass(i);
 
 					pass.Bind(effect);
-					this->UpdateRenderPSO(effect, tech, pass, rl);
+					this->UpdateRenderPSO(effect, pass, rl, has_tessellation);
 					d3d_render_cmd_list_->DrawIndexedInstanced(num_indices, num_instances, rl.StartIndexLocation(),
 						rl.StartVertexLocation(), rl.StartInstanceLocation());
 					pass.Unbind(effect);
@@ -1259,7 +988,7 @@ namespace KlayGE
 					auto& pass = tech.Pass(i);
 
 					pass.Bind(effect);
-					this->UpdateRenderPSO(effect, tech, pass, rl);
+					this->UpdateRenderPSO(effect, pass, rl, has_tessellation);
 					d3d_render_cmd_list_->DrawInstanced(num_vertices, num_instances,
 						rl.StartVertexLocation(), rl.StartInstanceLocation());
 					pass.Unbind(effect);
@@ -1268,20 +997,11 @@ namespace KlayGE
 		}
 
 		num_draws_just_called_ += num_passes;
-
-		fb.UnbindBarrier();
-
-		last_engine_type_ = ET_Render;
 	}
 
 	void D3D12RenderEngine::DoDispatch(RenderEffect const & effect, RenderTechnique const & tech,
 		uint32_t tgx, uint32_t tgy, uint32_t tgz)
 	{
-		if (last_engine_type_ != ET_Compute)
-		{
-			this->ForceCPUGPUSync();
-		}
-
 		uint32_t const num_passes = tech.NumPasses();
 		for (uint32_t i = 0; i < num_passes; ++ i)
 		{
@@ -1289,21 +1009,23 @@ namespace KlayGE
 
 			pass.Bind(effect);
 			this->UpdateComputePSO(effect, pass);
-			d3d_compute_cmd_list_->Dispatch(tgx, tgy, tgz);
+			d3d_render_cmd_list_->Dispatch(tgx, tgy, tgz);
 			pass.Unbind(effect);
 		}
 
 		num_dispatches_just_called_ += num_passes;
-		last_engine_type_ = ET_Compute;
 	}
 
 	void D3D12RenderEngine::DoDispatchIndirect(RenderEffect const & effect, RenderTechnique const & tech,
 		GraphicsBufferPtr const & buff_args, uint32_t offset)
 	{
-		if (last_engine_type_ != ET_Compute)
+		auto& arg_buff = checked_cast<D3D12GraphicsBuffer&>(*buff_args);
+		if (!(arg_buff.AccessHint() & (EAH_CPU_Read | EAH_CPU_Write)))
 		{
-			this->ForceCPUGPUSync();
+			arg_buff.UpdateResourceBarrier(d3d_render_cmd_list_.get(), 0, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
 		}
+
+		this->FlushResourceBarriers(d3d_render_cmd_list_.get());
 
 		uint32_t const num_passes = tech.NumPasses();
 		for (uint32_t i = 0; i < num_passes; ++ i)
@@ -1312,52 +1034,33 @@ namespace KlayGE
 
 			pass.Bind(effect);
 			this->UpdateComputePSO(effect, pass);
-			// TODO: ExecuteIndirect's first 2 parameters can't be right
-			d3d_compute_cmd_list_->ExecuteIndirect(nullptr, 0, checked_cast<D3D12GraphicsBuffer*>(buff_args.get())->D3DBuffer().get(),
-				offset, nullptr, 0);
+			d3d_render_cmd_list_->ExecuteIndirect(dispatch_indirect_signature_.get(), 1, arg_buff.D3DResource().get(), offset, nullptr, 0);
 			pass.Unbind(effect);
 		}
 
 		num_dispatches_just_called_ += num_passes;
-		last_engine_type_ = ET_Compute;
 	}
 
 	void D3D12RenderEngine::ForceFlush()
 	{
-		TIF(d3d_render_cmd_list_->Close());
-		TIF(d3d_compute_cmd_list_->Close());
-		TIF(d3d_copy_cmd_list_->Close());
-
-		ID3D12CommandList* cmd_lists[1];
-
-		cmd_lists[0] = d3d_render_cmd_list_.get();
-		d3d_render_cmd_queue_->ExecuteCommandLists(sizeof(cmd_lists) / sizeof(cmd_lists[0]), cmd_lists);
-
-		cmd_lists[0] = d3d_compute_cmd_list_.get();
-		d3d_compute_cmd_queue_->ExecuteCommandLists(sizeof(cmd_lists) / sizeof(cmd_lists[0]), cmd_lists);
-
-		cmd_lists[0] = d3d_copy_cmd_list_.get();
-		d3d_copy_cmd_queue_->ExecuteCommandLists(sizeof(cmd_lists) / sizeof(cmd_lists[0]), cmd_lists);
+		this->CommitRenderCmd();
+		this->ResetRenderCmd();
 	}
 
-	void D3D12RenderEngine::ForceCPUGPUSync()
+	void D3D12RenderEngine::ForceFinish()
 	{
-		this->CommitRenderCmd();
-		this->CommitComputeCmd();
-		this->CommitCopyCmd();
-		this->SyncRenderCmd();
-		this->SyncComputeCmd();
-		this->SyncCopyCmd();
-		this->ResetRenderCmd();
-		this->ResetComputeCmd();
-		this->ResetCopyCmd();
+		curr_vbvs_.clear();
+		curr_ibv_ = { 0, 0, DXGI_FORMAT_UNKNOWN };
 
-		this->ClearPSOCache();
+		this->ForceFlush();
+		this->SyncRenderCmd();
+
+		this->ClearTempObjs();
 	}
 
 	TexturePtr const & D3D12RenderEngine::ScreenDepthStencilTexture() const
 	{
-		return checked_cast<D3D12RenderWindow*>(screen_frame_buffer_.get())->D3DDepthStencilBuffer();
+		return checked_cast<D3D12RenderWindow&>(*screen_frame_buffer_).D3DDepthStencilBuffer();
 	}
 
 	// 设置剪除矩阵
@@ -1372,27 +1075,43 @@ namespace KlayGE
 
 	void D3D12RenderEngine::DoResize(uint32_t width, uint32_t height)
 	{
-		checked_cast<D3D12RenderWindow*>(screen_frame_buffer_.get())->Resize(width, height);
+		checked_cast<D3D12RenderWindow&>(*screen_frame_buffer_).Resize(width, height);
 	}
 
 	void D3D12RenderEngine::DoDestroy()
 	{
 		adapterList_.Destroy();
 
+		if (render_cmd_fence_)
+		{
+			uint64_t max_fence_val = 0;
+			for (auto const& item : d3d_render_cmd_allocators_)
+			{
+				max_fence_val = std::max(max_fence_val, item.second);
+			}
+			render_cmd_fence_->Wait(max_fence_val);
+		}
+
 		res_cmd_fence_.reset();
 		render_cmd_fence_.reset();
-		compute_cmd_fence_.reset();
 
-		copy_cmd_fence_.reset();
+		this->ClearTempObjs();
 
-		this->ClearPSOCache();
+		temp_upload_free_buffs_.clear();
+		temp_readback_free_buffs_.clear();
 
-		compute_psos_.clear();
-		graphics_psos_.clear();
+		so_buffs_.clear();
 		root_signatures_.clear();
+		graphics_psos_.clear();
+		compute_psos_.clear();
+		cbv_srv_uav_heaps_.clear();
 
 		bilinear_blit_tech_ = nullptr;
 		blit_effect_.reset();
+
+		draw_indirect_signature_.reset();
+		draw_indexed_indirect_signature_.reset();
+		dispatch_indirect_signature_.reset();
 
 		cbv_srv_uav_desc_heap_.reset();
 		dsv_desc_heap_.reset();
@@ -1401,18 +1120,15 @@ namespace KlayGE
 		d3d_res_cmd_list_.reset();
 		d3d_res_cmd_allocator_.reset();
 		d3d_render_cmd_list_.reset();
-		d3d_render_cmd_allocator_.reset();
+		curr_render_cmd_allocator_.reset();
+		d3d_render_cmd_allocators_.clear();
 		d3d_render_cmd_queue_.reset();
-		d3d_compute_cmd_list_.reset();
-		d3d_compute_cmd_allocator_.reset();
-		d3d_compute_cmd_queue_.reset();
-		d3d_copy_cmd_list_.reset();
-		d3d_copy_cmd_allocator_.reset();
-		d3d_copy_cmd_queue_.reset();
 		d3d_device_.reset();
 
 		gi_factory_4_.reset();
 		gi_factory_5_.reset();
+
+		D3D12InterfaceLoader::Instance().Destroy();
 	}
 
 	void D3D12RenderEngine::DoSuspend()
@@ -1433,40 +1149,12 @@ namespace KlayGE
 
 	bool D3D12RenderEngine::FullScreen() const
 	{
-		return checked_cast<D3D12RenderWindow*>(screen_frame_buffer_.get())->FullScreen();
+		return checked_cast<D3D12RenderWindow&>(*screen_frame_buffer_).FullScreen();
 	}
 
 	void D3D12RenderEngine::FullScreen(bool fs)
 	{
-		checked_cast<D3D12RenderWindow*>(screen_frame_buffer_.get())->FullScreen(fs);
-	}
-
-	bool D3D12RenderEngine::VertexFormatSupport(ElementFormat elem_fmt)
-	{
-		auto iter = std::lower_bound(vertex_format_.begin(), vertex_format_.end(), elem_fmt);
-		return (iter != vertex_format_.end()) && (*iter == elem_fmt);
-	}
-
-	bool D3D12RenderEngine::TextureFormatSupport(ElementFormat elem_fmt)
-	{
-		auto iter = std::lower_bound(texture_format_.begin(), texture_format_.end(), elem_fmt);
-		return (iter != texture_format_.end()) && (*iter == elem_fmt);
-	}
-
-	bool D3D12RenderEngine::RenderTargetFormatSupport(ElementFormat elem_fmt, uint32_t sample_count, uint32_t sample_quality)
-	{
-		auto iter = rendertarget_format_.find(elem_fmt);
-		if (iter != rendertarget_format_.end())
-		{
-			for (auto const & p : iter->second)
-			{
-				if ((sample_count == p.first) && (sample_quality < p.second))
-				{
-					return true;
-				}
-			}
-		}
-		return false;
+		checked_cast<D3D12RenderWindow&>(*screen_frame_buffer_).FullScreen(fs);
 	}
 
 	// 填充设备能力
@@ -1481,8 +1169,6 @@ namespace KlayGE
 		case D3D_FEATURE_LEVEL_12_0:
 		case D3D_FEATURE_LEVEL_11_1:
 		case D3D_FEATURE_LEVEL_11_0:
-			caps_.max_shader_model
-				= (d3d_feature_level_ >= D3D_FEATURE_LEVEL_12_0) ? ShaderModel(5, 1) : ShaderModel(5, 0);
 			caps_.max_texture_width = caps_.max_texture_height = D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION;
 			caps_.max_texture_depth = D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION;
 			caps_.max_texture_cube_size = D3D12_REQ_TEXTURECUBE_DIMENSION;
@@ -1494,40 +1180,15 @@ namespace KlayGE
 			caps_.max_simultaneous_uavs = D3D12_PS_CS_UAV_REGISTER_COUNT;
 			caps_.cs_support = true;
 			caps_.tess_method = TM_Hardware;
-			break;
-
-		default:
-			BOOST_ASSERT(false);
-			break;
-		}
-
-		switch (d3d_feature_level_)
-		{
-		case D3D_FEATURE_LEVEL_12_1:
-		case D3D_FEATURE_LEVEL_12_0:
-		case D3D_FEATURE_LEVEL_11_1:
-		case D3D_FEATURE_LEVEL_11_0:
 			caps_.max_vertex_streams = D3D12_STANDARD_VERTEX_ELEMENT_COUNT;
-			break;
-
-		default:
-			BOOST_ASSERT(false);
-			break;
-		}
-		switch (d3d_feature_level_)
-		{
-		case D3D_FEATURE_LEVEL_12_1:
-		case D3D_FEATURE_LEVEL_12_0:
-		case D3D_FEATURE_LEVEL_11_1:
-		case D3D_FEATURE_LEVEL_11_0:
 			caps_.max_texture_anisotropy = D3D12_MAX_MAXANISOTROPY;
 			break;
 
 		default:
-			BOOST_ASSERT(false);
-			break;
+			KFL_UNREACHABLE("Invalid feature level");
 		}
 
+		caps_.max_shader_model = (d3d_feature_level_ >= D3D_FEATURE_LEVEL_12_0) ? ShaderModel(5, 1) : ShaderModel(5, 0);
 		{
 			D3D12_FEATURE_DATA_ARCHITECTURE arch_feature;
 			arch_feature.NodeIndex = 0;
@@ -1541,21 +1202,57 @@ namespace KlayGE
 		caps_.primitive_restart_support = true;
 		caps_.multithread_rendering_support = true;
 		caps_.multithread_res_creating_support = true;
+		caps_.arbitrary_multithread_rendering_support = false;
 		caps_.mrt_independent_bit_depths_support = true;
-		caps_.standard_derivatives_support = true;
-		caps_.shader_texture_lod_support = true;
-		caps_.logic_op_support = true;
 		caps_.independent_blend_support = true;
 		caps_.draw_indirect_support = true;
 		caps_.no_overwrite_support = true;
 		caps_.full_npot_texture_support = true;
 		caps_.render_to_texture_array_support = true;
+		caps_.explicit_multi_sample_support = true;
 		caps_.load_from_buffer_support = true;
+		caps_.uavs_at_every_stage_support = (d3d_feature_level_ >= D3D_FEATURE_LEVEL_11_1);
+		caps_.flexible_srvs_support = true;
 		caps_.gs_support = true;
 		caps_.hs_support = true;
 		caps_.ds_support = true;
 
-		std::pair<ElementFormat, DXGI_FORMAT> fmts[] = 
+		std::vector<ElementFormat> vertex_formats;
+		std::vector<ElementFormat> texture_formats;
+		std::map<ElementFormat, std::vector<uint32_t>> render_target_formats;
+		std::vector<ElementFormat> uav_formats;
+
+		bool check_uav_fmts = false;
+		{
+			D3D12_FEATURE_DATA_D3D12_OPTIONS feature_data;
+			if (SUCCEEDED(d3d_device_->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &feature_data, sizeof(feature_data))))
+			{
+				caps_.logic_op_support = feature_data.OutputMergerLogicOp ? true : false;
+				caps_.rovs_support = feature_data.ROVsSupported ? true : false;
+
+				if (feature_data.TypedUAVLoadAdditionalFormats)
+				{
+					check_uav_fmts = true;
+				}
+			}
+			else
+			{
+				caps_.logic_op_support = false;
+				caps_.rovs_support = false;
+			}
+		}
+
+		if (!check_uav_fmts)
+		{
+			uav_formats.insert(uav_formats.end(),
+				{
+					EF_R32F,
+					EF_R32UI,
+					EF_R32I
+				});
+		}
+
+		std::pair<ElementFormat, DXGI_FORMAT> const fmts[] = 
 		{
 			std::make_pair(EF_A8, DXGI_FORMAT_A8_UNORM),
 			std::make_pair(EF_R5G6B5, DXGI_FORMAT_B5G6R5_UNORM),
@@ -1627,170 +1324,121 @@ namespace KlayGE
 		};
 
 		D3D12_FEATURE_DATA_FORMAT_SUPPORT fmt_support;
-		for (size_t i = 0; i < sizeof(fmts) / sizeof(fmts[0]); ++ i)
+		for (auto const & fmt : fmts)
 		{
-			DXGI_FORMAT dxgi_fmt;
-			if (IsDepthFormat(fmts[i].first))
+			if (IsDepthFormat(fmt.first))
 			{
-				switch (fmts[i].first)
+				switch (fmt.first)
 				{
 				case EF_D16:
-					dxgi_fmt = DXGI_FORMAT_R16_TYPELESS;
+					fmt_support.Format = DXGI_FORMAT_R16_TYPELESS;
 					break;
 
 				case EF_D24S8:
-					dxgi_fmt = DXGI_FORMAT_R24G8_TYPELESS;
+					fmt_support.Format = DXGI_FORMAT_R24G8_TYPELESS;
 					break;
 
 				case EF_D32F:
 				default:
-					dxgi_fmt = DXGI_FORMAT_R32_TYPELESS;
+					fmt_support.Format = DXGI_FORMAT_R32_TYPELESS;
 					break;
 				}
 
-				fmt_support.Format = dxgi_fmt;
-				fmt_support.Support1 = D3D12_FORMAT_SUPPORT1_IA_VERTEX_BUFFER;
+				fmt_support.Support1 = D3D12_FORMAT_SUPPORT1_NONE;
 				fmt_support.Support2 = D3D12_FORMAT_SUPPORT2_NONE;
 				if (SUCCEEDED(d3d_device_->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &fmt_support, sizeof(fmt_support))))
 				{
-					vertex_format_.push_back(fmts[i].first);
-				}
+					if (fmt_support.Support1 & D3D12_FORMAT_SUPPORT1_IA_VERTEX_BUFFER)
+					{
+						vertex_formats.push_back(fmt.first);
+					}
 
-				fmt_support.Support1 = D3D12_FORMAT_SUPPORT1_TEXTURE1D;
-				if (SUCCEEDED(d3d_device_->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &fmt_support, sizeof(fmt_support))))
-				{
-					texture_format_.push_back(fmts[i].first);
-				}
-				fmt_support.Support1 = D3D12_FORMAT_SUPPORT1_TEXTURE2D;
-				if (SUCCEEDED(d3d_device_->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &fmt_support, sizeof(fmt_support))))
-				{
-					texture_format_.push_back(fmts[i].first);
-				}
-				fmt_support.Support1 = D3D12_FORMAT_SUPPORT1_TEXTURE3D;
-				if (SUCCEEDED(d3d_device_->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &fmt_support, sizeof(fmt_support))))
-				{
-					texture_format_.push_back(fmts[i].first);
-				}
-				fmt_support.Support1 = D3D12_FORMAT_SUPPORT1_TEXTURECUBE;
-				if (SUCCEEDED(d3d_device_->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &fmt_support, sizeof(fmt_support))))
-				{
-					texture_format_.push_back(fmts[i].first);
-				}
-				fmt_support.Support1 = D3D12_FORMAT_SUPPORT1_SHADER_LOAD;
-				if (SUCCEEDED(d3d_device_->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &fmt_support, sizeof(fmt_support))))
-				{
-					texture_format_.push_back(fmts[i].first);
-				}
-				fmt_support.Support1 = D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE;
-				if (SUCCEEDED(d3d_device_->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &fmt_support, sizeof(fmt_support))))
-				{
-					texture_format_.push_back(fmts[i].first);
+					if ((fmt_support.Support1 & D3D12_FORMAT_SUPPORT1_TEXTURE1D)
+						|| (fmt_support.Support1 & D3D12_FORMAT_SUPPORT1_TEXTURE2D)
+						|| (fmt_support.Support1 & D3D12_FORMAT_SUPPORT1_TEXTURE3D)
+						|| (fmt_support.Support1 & D3D12_FORMAT_SUPPORT1_TEXTURECUBE)
+						|| (fmt_support.Support1 & D3D12_FORMAT_SUPPORT1_SHADER_LOAD)
+						|| (fmt_support.Support1 & D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE))
+					{
+						texture_formats.push_back(fmt.first);
+					}
 				}
 			}
 			else
 			{
-				dxgi_fmt = fmts[i].second;
-
-				fmt_support.Format = dxgi_fmt;
-				fmt_support.Support1 = D3D12_FORMAT_SUPPORT1_IA_VERTEX_BUFFER;
+				fmt_support.Format = fmt.second;
+				fmt_support.Support1 = D3D12_FORMAT_SUPPORT1_NONE;
 				fmt_support.Support2 = D3D12_FORMAT_SUPPORT2_NONE;
 				if (SUCCEEDED(d3d_device_->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &fmt_support, sizeof(fmt_support))))
 				{
-					vertex_format_.push_back(fmts[i].first);
-				}
+					if (fmt_support.Support1 & D3D12_FORMAT_SUPPORT1_IA_VERTEX_BUFFER)
+					{
+						vertex_formats.push_back(fmt.first);
+					}
 
-				fmt_support.Support1 = D3D12_FORMAT_SUPPORT1_TEXTURE1D;
-				if (SUCCEEDED(d3d_device_->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &fmt_support, sizeof(fmt_support))))
-				{
-					texture_format_.push_back(fmts[i].first);
-				}
-				fmt_support.Support1 = D3D12_FORMAT_SUPPORT1_TEXTURE2D;
-				if (SUCCEEDED(d3d_device_->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &fmt_support, sizeof(fmt_support))))
-				{
-					texture_format_.push_back(fmts[i].first);
-				}
-				fmt_support.Support1 = D3D12_FORMAT_SUPPORT1_TEXTURE3D;
-				if (SUCCEEDED(d3d_device_->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &fmt_support, sizeof(fmt_support))))
-				{
-					texture_format_.push_back(fmts[i].first);
-				}
-				fmt_support.Support1 = D3D12_FORMAT_SUPPORT1_TEXTURECUBE;
-				if (SUCCEEDED(d3d_device_->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &fmt_support, sizeof(fmt_support))))
-				{
-					texture_format_.push_back(fmts[i].first);
-				}
-				fmt_support.Support1 = D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE;
-				if (SUCCEEDED(d3d_device_->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &fmt_support, sizeof(fmt_support))))
-				{
-					texture_format_.push_back(fmts[i].first);
+					if ((fmt_support.Support1 & D3D12_FORMAT_SUPPORT1_TEXTURE1D)
+						|| (fmt_support.Support1 & D3D12_FORMAT_SUPPORT1_TEXTURE2D)
+						|| (fmt_support.Support1 & D3D12_FORMAT_SUPPORT1_TEXTURE3D)
+						|| (fmt_support.Support1 & D3D12_FORMAT_SUPPORT1_TEXTURECUBE)
+						|| (fmt_support.Support1 & D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE))
+					{
+						texture_formats.push_back(fmt.first);
+					}
+
+					if (check_uav_fmts
+						&& ((fmt_support.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD) != 0)
+						&& ((fmt_support.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE) != 0))
+					{
+						uav_formats.push_back(fmt.first);
+					}
 				}
 			}
 
-			bool rt_supported = false;
-			fmt_support.Format = dxgi_fmt;
-			fmt_support.Support1 = D3D12_FORMAT_SUPPORT1_RENDER_TARGET;
+			fmt_support.Format = fmt.second;
+			fmt_support.Support1 = D3D12_FORMAT_SUPPORT1_NONE;
 			fmt_support.Support2 = D3D12_FORMAT_SUPPORT2_NONE;
 			if (SUCCEEDED(d3d_device_->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &fmt_support, sizeof(fmt_support))))
 			{
-				rt_supported = true;
-			}
-			fmt_support.Support1 = D3D12_FORMAT_SUPPORT1_MULTISAMPLE_RENDERTARGET;
-			if (SUCCEEDED(d3d_device_->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &fmt_support, sizeof(fmt_support))))
-			{
-				rt_supported = true;
-			}
-			fmt_support.Support1 = D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL;
-			if (SUCCEEDED(d3d_device_->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &fmt_support, sizeof(fmt_support))))
-			{
-				rt_supported = true;
-			}
-
-			if (rt_supported)
-			{
-				D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS msaa_quality_levels;
-				msaa_quality_levels.Format = dxgi_fmt;
-
-				UINT count = 1;
-				while (count <= D3D12_MAX_MULTISAMPLE_SAMPLE_COUNT)
+				if ((fmt_support.Support1 & D3D12_FORMAT_SUPPORT1_RENDER_TARGET)
+					|| (fmt_support.Support1 & D3D12_FORMAT_SUPPORT1_MULTISAMPLE_RENDERTARGET)
+					|| (fmt_support.Support1 & D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL))
 				{
-					msaa_quality_levels.SampleCount = count;
-					if (SUCCEEDED(d3d_device_->CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &msaa_quality_levels, sizeof(msaa_quality_levels))))
+					D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS msaa_quality_levels;
+					msaa_quality_levels.Format = fmt.second;
+					msaa_quality_levels.Flags = D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE;
+					msaa_quality_levels.NumQualityLevels = 0;
+
+					UINT count = 1;
+					while (count <= D3D12_MAX_MULTISAMPLE_SAMPLE_COUNT)
 					{
-						if (msaa_quality_levels.NumQualityLevels > 0)
+						msaa_quality_levels.SampleCount = count;
+						if (SUCCEEDED(d3d_device_->CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS,
+							&msaa_quality_levels, sizeof(msaa_quality_levels))))
 						{
-							rendertarget_format_[fmts[i].first].emplace_back(count, msaa_quality_levels.NumQualityLevels);
-							count <<= 1;
+							if (msaa_quality_levels.NumQualityLevels > 0)
+							{
+								render_target_formats[fmt.first].push_back(
+									RenderDeviceCaps::EncodeSampleCountQuality(count, msaa_quality_levels.NumQualityLevels));
+								count <<= 1;
+							}
+							else
+							{
+								break;
+							}
 						}
 						else
 						{
 							break;
 						}
 					}
-					else
-					{
-						break;
-					}
 				}
 			}
 		}
 
-		std::sort(vertex_format_.begin(), vertex_format_.end());
-		vertex_format_.erase(std::unique(vertex_format_.begin(), vertex_format_.end()), vertex_format_.end());
-		std::sort(texture_format_.begin(), texture_format_.end());
-		texture_format_.erase(std::unique(texture_format_.begin(), texture_format_.end()), texture_format_.end());
-
-		caps_.vertex_format_support = std::bind<bool>(&D3D12RenderEngine::VertexFormatSupport, this,
-			std::placeholders::_1);
-		caps_.texture_format_support = std::bind<bool>(&D3D12RenderEngine::TextureFormatSupport, this,
-			std::placeholders::_1);
-		caps_.rendertarget_format_support = std::bind<bool>(&D3D12RenderEngine::RenderTargetFormatSupport, this,
-			std::placeholders::_1, std::placeholders::_2, std::placeholders::_3);
-
-		caps_.depth_texture_support = (caps_.texture_format_support(EF_D24S8) || caps_.texture_format_support(EF_D16));
-		caps_.fp_color_support = ((caps_.texture_format_support(EF_B10G11R11F) && caps_.rendertarget_format_support(EF_B10G11R11F, 1, 0))
-			|| (caps_.texture_format_support(EF_ABGR16F) && caps_.rendertarget_format_support(EF_ABGR16F, 1, 0)));
-		caps_.pack_to_rgba_required = !(caps_.texture_format_support(EF_R16F) && caps_.rendertarget_format_support(EF_R16F, 1, 0)
-			&& caps_.texture_format_support(EF_R32F) && caps_.rendertarget_format_support(EF_R32F, 1, 0));
+		caps_.AssignVertexFormats(std::move(vertex_formats));
+		caps_.AssignTextureFormats(std::move(texture_formats));
+		caps_.AssignRenderTargetFormats(std::move(render_target_formats));
+		caps_.AssignUavFormats(std::move(uav_formats));
 	}
 
 	void D3D12RenderEngine::StereoscopicForLCDShutter(int32_t eye)
@@ -1803,10 +1451,9 @@ namespace KlayGE
 		{
 		case SM_DXGI:
 			{
-				D3D12RenderTargetRenderView* rtv = checked_cast<D3D12RenderTargetRenderView*>(
-					(0 == eye) ? win->D3DBackBufferRTV().get() : win->D3DBackBufferRightEyeRTV().get());
+				auto& rtv = checked_cast<D3D12RenderTargetView&>((0 == eye) ? *win->D3DBackBufferRtv() : *win->D3DBackBufferRightEyeRtv());
 
-				D3D12_CPU_DESCRIPTOR_HANDLE rt_handle = rtv->D3DRenderTargetView()->Handle();
+				D3D12_CPU_DESCRIPTOR_HANDLE rt_handle = rtv.RetrieveD3DRenderTargetView()->Handle();
 				d3d_render_cmd_list_->OMSetRenderTargets(1, &rt_handle, false, nullptr);
 
 				D3D12_VIEWPORT vp;
@@ -1830,27 +1477,121 @@ namespace KlayGE
 
 	void D3D12RenderEngine::OMSetStencilRef(uint16_t stencil_ref)
 	{
-		if (stencil_ref_cache_ != stencil_ref)
+		if (curr_stencil_ref_ != stencil_ref)
 		{
-			stencil_ref_cache_ = stencil_ref;
-			d3d_render_cmd_list_->OMSetStencilRef(stencil_ref_cache_);
+			d3d_render_cmd_list_->OMSetStencilRef(stencil_ref);
+			curr_stencil_ref_ = stencil_ref;
 		}
 	}
 
-	void D3D12RenderEngine::OMSetBlendState(Color const & blend_factor, uint32_t sample_mask)
+	void D3D12RenderEngine::OMSetBlendFactor(Color const & blend_factor)
 	{
-		if (blend_factor_cache_ != blend_factor)
+		if (curr_blend_factor_ != blend_factor)
 		{
-			blend_factor_cache_ = blend_factor;
-			d3d_render_cmd_list_->OMSetBlendFactor(&blend_factor_cache_.r());
+			d3d_render_cmd_list_->OMSetBlendFactor(&blend_factor.r());
+			curr_blend_factor_ = blend_factor;
 		}
-		sample_mask_cache_ = sample_mask;
 	}
 
 	void D3D12RenderEngine::RSSetViewports(UINT NumViewports, D3D12_VIEWPORT const * pViewports)
 	{
-		viewport_cache_ = pViewports[0];
-		d3d_render_cmd_list_->RSSetViewports(NumViewports, reinterpret_cast<D3D12_VIEWPORT const *>(pViewports));
+		if (NumViewports == 1)
+		{
+			if (memcmp(&curr_viewport_, pViewports, sizeof(pViewports[0])) != 0)
+			{
+				d3d_render_cmd_list_->RSSetViewports(NumViewports, pViewports);
+				curr_viewport_ = pViewports[0];
+			}
+		}
+		else
+		{
+			d3d_render_cmd_list_->RSSetViewports(NumViewports, pViewports);
+			curr_viewport_ = pViewports[0];
+		}
+	}
+
+	void D3D12RenderEngine::SetPipelineState(ID3D12PipelineState* pso)
+	{
+		if (pso != curr_pso_)
+		{
+			d3d_render_cmd_list_->SetPipelineState(pso);
+			curr_pso_ = pso;
+		}
+	}
+
+	void D3D12RenderEngine::SetGraphicsRootSignature(ID3D12RootSignature* root_signature)
+	{
+		if (root_signature != curr_graphics_root_signature_)
+		{
+			d3d_render_cmd_list_->SetGraphicsRootSignature(root_signature);
+			curr_graphics_root_signature_ = root_signature;
+		}
+	}
+
+	void D3D12RenderEngine::SetComputeRootSignature(ID3D12RootSignature* root_signature)
+	{
+		if (root_signature != curr_compute_root_signature_)
+		{
+			d3d_render_cmd_list_->SetComputeRootSignature(root_signature);
+			curr_compute_root_signature_ = root_signature;
+		}
+	}
+
+	void D3D12RenderEngine::RSSetScissorRects(D3D12_RECT const & rect)
+	{
+		if (memcmp(&rect, &curr_scissor_rc_, sizeof(rect)) != 0)
+		{
+			d3d_render_cmd_list_->RSSetScissorRects(1, &rect);
+			curr_scissor_rc_ = rect;
+		}
+	}
+
+	void D3D12RenderEngine::IASetPrimitiveTopology(RenderLayout::topology_type primitive_topology)
+	{
+		if (topology_type_cache_ != primitive_topology)
+		{
+			topology_type_cache_ = primitive_topology;
+			curr_topology_ = D3D12Mapping::Mapping(primitive_topology);
+			d3d_render_cmd_list_->IASetPrimitiveTopology(curr_topology_);
+		}
+	}
+
+	void D3D12RenderEngine::SetDescriptorHeaps(ArrayRef<ID3D12DescriptorHeap*> descriptor_heaps)
+	{
+		if ((descriptor_heaps.size() != curr_num_desc_heaps_)
+			|| (descriptor_heaps != MakeArrayRef(curr_desc_heaps_.data(), curr_num_desc_heaps_)))
+		{
+			BOOST_ASSERT(descriptor_heaps.size() <= curr_desc_heaps_.size());
+			curr_num_desc_heaps_ = static_cast<uint32_t>(descriptor_heaps.size());
+			for (uint32_t i = 0; i < curr_num_desc_heaps_; ++ i)
+			{
+				curr_desc_heaps_[i] = descriptor_heaps[i];
+			}
+
+			d3d_render_cmd_list_->SetDescriptorHeaps(curr_num_desc_heaps_, curr_desc_heaps_.data());
+		}
+	}
+
+	void D3D12RenderEngine::IASetVertexBuffers(uint32_t start_slot, ArrayRef<D3D12_VERTEX_BUFFER_VIEW> views)
+	{
+		if ((start_slot + views.size() > curr_vbvs_.size())
+			|| (memcmp(&curr_vbvs_[start_slot], views.data(), views.size() * sizeof(views[0])) != 0))
+		{
+			curr_vbvs_.resize(std::max(curr_vbvs_.size(), start_slot + views.size()));
+			memcpy(&curr_vbvs_[start_slot], views.data(), views.size() * sizeof(views[0]));
+			d3d_render_cmd_list_->IASetVertexBuffers(start_slot, static_cast<uint32_t>(views.size()), views.data());
+		}
+	}
+
+	void D3D12RenderEngine::IASetIndexBuffer(D3D12_INDEX_BUFFER_VIEW const & view)
+	{
+		if ((curr_ibv_.BufferLocation != view.BufferLocation)
+			|| (curr_ibv_.SizeInBytes != view.SizeInBytes)
+			|| (curr_ibv_.Format != view.Format))
+		{
+			d3d_render_cmd_list_->IASetIndexBuffer(&view);
+			curr_ibv_ = view;
+		}
 	}
 
 	uint32_t D3D12RenderEngine::AllocRTV()
@@ -1864,8 +1605,7 @@ namespace KlayGE
 			}
 		}
 
-		BOOST_ASSERT(false);
-		return 0;
+		KFL_UNREACHABLE("Can't allocate more RTVs");
 	}
 
 	uint32_t D3D12RenderEngine::AllocDSV()
@@ -1879,8 +1619,7 @@ namespace KlayGE
 			}
 		}
 
-		BOOST_ASSERT(false);
-		return 0;
+		KFL_UNREACHABLE("Can't allocate more DSVs");
 	}
 
 	uint32_t D3D12RenderEngine::AllocCBVSRVUAV()
@@ -1893,9 +1632,7 @@ namespace KlayGE
 				return static_cast<uint32_t>(i) * cbv_srv_uav_desc_size_;
 			}
 		}
-
-		BOOST_ASSERT(false);
-		return 0;
+		KFL_UNREACHABLE("Can't allocate more CBVs/SRVs/UAVs");
 	}
 
 	void D3D12RenderEngine::DeallocRTV(uint32_t offset)
@@ -1923,7 +1660,7 @@ namespace KlayGE
 	}
 
 	ID3D12RootSignaturePtr const & D3D12RenderEngine::CreateRootSignature(
-			std::array<size_t, ShaderObject::ST_NumShaderTypes * 4> const & num,
+			std::array<uint32_t, NumShaderStages * 4> const & num,
 			bool has_vs, bool has_stream_output)
 	{
 		ID3D12RootSignaturePtr ret;
@@ -1935,40 +1672,40 @@ namespace KlayGE
 		auto iter = root_signatures_.find(hash_val);
 		if (iter == root_signatures_.end())
 		{
-			size_t num_cbv = 0;
-			for (uint32_t i = 0; i < ShaderObject::ST_NumShaderTypes; ++ i)
+			uint32_t num_cbv = 0;
+			for (uint32_t i = 0; i < NumShaderStages; ++ i)
 			{
 				num_cbv += num[i * 4 + 0];
 			}
 
 			std::vector<D3D12_ROOT_PARAMETER> root_params;
 			std::vector<D3D12_DESCRIPTOR_RANGE> ranges;
-			ranges.reserve(num_cbv + ShaderObject::ST_NumShaderTypes * 3);
-			for (uint32_t i = 0; i < ShaderObject::ST_NumShaderTypes; ++ i)
+			ranges.reserve(num_cbv + NumShaderStages * 3);
+			for (uint32_t i = 0; i < NumShaderStages; ++i)
 			{
 				if (num[i * 4 + 0] != 0)
 				{
 					D3D12_ROOT_PARAMETER root_param;
 					root_param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-					switch (i)
+					switch (static_cast<ShaderStage>(i))
 					{
-					case ShaderObject::ST_VertexShader:
+					case ShaderStage::Vertex:
 						root_param.ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 						break;
 
-					case ShaderObject::ST_PixelShader:
+					case ShaderStage::Pixel:
 						root_param.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 						break;
 
-					case ShaderObject::ST_GeometryShader:
+					case ShaderStage::Geometry:
 						root_param.ShaderVisibility = D3D12_SHADER_VISIBILITY_GEOMETRY;
 						break;
 
-					case ShaderObject::ST_HullShader:
+					case ShaderStage::Hull:
 						root_param.ShaderVisibility = D3D12_SHADER_VISIBILITY_HULL;
 						break;
 
-					case ShaderObject::ST_DomainShader:
+					case ShaderStage::Domain:
 						root_param.ShaderVisibility = D3D12_SHADER_VISIBILITY_DOMAIN;
 						break;
 
@@ -1984,13 +1721,13 @@ namespace KlayGE
 					}
 				}
 			}
-			for (uint32_t i = 0; i < ShaderObject::ST_NumShaderTypes; ++ i)
+			for (uint32_t i = 0; i < NumShaderStages; ++i)
 			{
 				if (num[i * 4 + 1] != 0)
 				{
 					D3D12_DESCRIPTOR_RANGE range;
 					range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-					range.NumDescriptors = static_cast<UINT>(num[i * 4 + 1]);
+					range.NumDescriptors = num[i * 4 + 1];
 					range.BaseShaderRegister = 0;
 					range.RegisterSpace = 0;
 					range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
@@ -1998,25 +1735,25 @@ namespace KlayGE
 
 					D3D12_ROOT_PARAMETER root_param;
 					root_param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-					switch (i)
+					switch (static_cast<ShaderStage>(i))
 					{
-					case ShaderObject::ST_VertexShader:
+					case ShaderStage::Vertex:
 						root_param.ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 						break;
 
-					case ShaderObject::ST_PixelShader:
+					case ShaderStage::Pixel:
 						root_param.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 						break;
 
-					case ShaderObject::ST_GeometryShader:
+					case ShaderStage::Geometry:
 						root_param.ShaderVisibility = D3D12_SHADER_VISIBILITY_GEOMETRY;
 						break;
 
-					case ShaderObject::ST_HullShader:
+					case ShaderStage::Hull:
 						root_param.ShaderVisibility = D3D12_SHADER_VISIBILITY_HULL;
 						break;
 
-					case ShaderObject::ST_DomainShader:
+					case ShaderStage::Domain:
 						root_param.ShaderVisibility = D3D12_SHADER_VISIBILITY_DOMAIN;
 						break;
 
@@ -2029,13 +1766,13 @@ namespace KlayGE
 					root_params.push_back(root_param);
 				}
 			}
-			for (uint32_t i = 0; i < ShaderObject::ST_NumShaderTypes; ++ i)
+			for (uint32_t i = 0; i < NumShaderStages; ++i)
 			{
 				if (num[i * 4 + 2] != 0)
 				{
 					D3D12_DESCRIPTOR_RANGE range;
 					range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-					range.NumDescriptors = static_cast<UINT>(num[i * 4 + 2]);
+					range.NumDescriptors = num[i * 4 + 2];
 					range.BaseShaderRegister = 0;
 					range.RegisterSpace = 0;
 					range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
@@ -2043,25 +1780,25 @@ namespace KlayGE
 
 					D3D12_ROOT_PARAMETER root_param;
 					root_param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-					switch (i)
+					switch (static_cast<ShaderStage>(i))
 					{
-					case ShaderObject::ST_VertexShader:
+					case ShaderStage::Vertex:
 						root_param.ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 						break;
 
-					case ShaderObject::ST_PixelShader:
+					case ShaderStage::Pixel:
 						root_param.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 						break;
 
-					case ShaderObject::ST_GeometryShader:
+					case ShaderStage::Geometry:
 						root_param.ShaderVisibility = D3D12_SHADER_VISIBILITY_GEOMETRY;
 						break;
 
-					case ShaderObject::ST_HullShader:
+					case ShaderStage::Hull:
 						root_param.ShaderVisibility = D3D12_SHADER_VISIBILITY_HULL;
 						break;
 
-					case ShaderObject::ST_DomainShader:
+					case ShaderStage::Domain:
 						root_param.ShaderVisibility = D3D12_SHADER_VISIBILITY_DOMAIN;
 						break;
 
@@ -2074,13 +1811,13 @@ namespace KlayGE
 					root_params.push_back(root_param);
 				}
 			}
-			for (uint32_t i = 0; i < ShaderObject::ST_NumShaderTypes; ++ i)
+			for (uint32_t i = 0; i < NumShaderStages; ++i)
 			{
 				if (num[i * 4 + 3] != 0)
 				{
 					D3D12_DESCRIPTOR_RANGE range;
 					range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
-					range.NumDescriptors = static_cast<UINT>(num[i * 4 + 3]);
+					range.NumDescriptors = num[i * 4 + 3];
 					range.BaseShaderRegister = 0;
 					range.RegisterSpace = 0;
 					range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
@@ -2088,25 +1825,25 @@ namespace KlayGE
 
 					D3D12_ROOT_PARAMETER root_param;
 					root_param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-					switch (i)
+					switch (static_cast<ShaderStage>(i))
 					{
-					case ShaderObject::ST_VertexShader:
+					case ShaderStage::Vertex:
 						root_param.ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 						break;
 
-					case ShaderObject::ST_PixelShader:
+					case ShaderStage::Pixel:
 						root_param.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 						break;
 
-					case ShaderObject::ST_GeometryShader:
+					case ShaderStage::Geometry:
 						root_param.ShaderVisibility = D3D12_SHADER_VISIBILITY_GEOMETRY;
 						break;
 
-					case ShaderObject::ST_HullShader:
+					case ShaderStage::Hull:
 						root_param.ShaderVisibility = D3D12_SHADER_VISIBILITY_HULL;
 						break;
 
-					case ShaderObject::ST_DomainShader:
+					case ShaderStage::Domain:
 						root_param.ShaderVisibility = D3D12_SHADER_VISIBILITY_DOMAIN;
 						break;
 
@@ -2137,9 +1874,9 @@ namespace KlayGE
 
 			ID3DBlob* signature = nullptr;
 			ID3DBlob* error = nullptr;
-			TIF(D3D12InterfaceLoader::Instance().D3D12SerializeRootSignature(&root_signature_desc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, &error));
+			TIFHR(D3D12InterfaceLoader::Instance().D3D12SerializeRootSignature(&root_signature_desc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, &error));
 			ID3D12RootSignature* rs;
-			TIF(d3d_device_->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(),
+			TIFHR(d3d_device_->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(),
 				IID_ID3D12RootSignature, reinterpret_cast<void**>(&rs)));
 			signature->Release();
 			if (error)
@@ -2147,12 +1884,10 @@ namespace KlayGE
 				error->Release();
 			}
 			
-			return root_signatures_.emplace(hash_val, MakeCOMPtr(rs)).first->second;
+			iter = root_signatures_.emplace(hash_val, MakeCOMPtr(rs)).first;
 		}
-		else
-		{
-			return iter->second;
-		}
+
+		return iter->second;
 	}
 
 	ID3D12PipelineStatePtr const & D3D12RenderEngine::CreateRenderPSO(D3D12_GRAPHICS_PIPELINE_STATE_DESC const & desc)
@@ -2165,13 +1900,11 @@ namespace KlayGE
 		if (iter == graphics_psos_.end())
 		{
 			ID3D12PipelineState* d3d_pso;
-			TIF(d3d_device_->CreateGraphicsPipelineState(&desc, IID_ID3D12PipelineState, reinterpret_cast<void**>(&d3d_pso)));
-			return graphics_psos_.emplace(hash_val, MakeCOMPtr(d3d_pso)).first->second;
+			TIFHR(d3d_device_->CreateGraphicsPipelineState(&desc, IID_ID3D12PipelineState, reinterpret_cast<void**>(&d3d_pso)));
+			iter = graphics_psos_.emplace(hash_val, MakeCOMPtr(d3d_pso)).first;
 		}
-		else
-		{
-			return iter->second;
-		}
+
+		return iter->second;
 	}
 
 	ID3D12PipelineStatePtr const & D3D12RenderEngine::CreateComputePSO(D3D12_COMPUTE_PIPELINE_STATE_DESC const & desc)
@@ -2184,13 +1917,11 @@ namespace KlayGE
 		if (iter == compute_psos_.end())
 		{
 			ID3D12PipelineState* d3d_pso;
-			TIF(d3d_device_->CreateComputePipelineState(&desc, IID_ID3D12PipelineState, reinterpret_cast<void**>(&d3d_pso)));
-			return compute_psos_.emplace(hash_val, MakeCOMPtr(d3d_pso)).first->second;
+			TIFHR(d3d_device_->CreateComputePipelineState(&desc, IID_ID3D12PipelineState, reinterpret_cast<void**>(&d3d_pso)));
+			iter = compute_psos_.emplace(hash_val, MakeCOMPtr(d3d_pso)).first;
 		}
-		else
-		{
-			return iter->second;
-		}
+
+		return iter->second;
 	}
 
 	ID3D12DescriptorHeapPtr D3D12RenderEngine::CreateDynamicCBVSRVUAVDescriptorHeap(uint32_t num)
@@ -2201,9 +1932,166 @@ namespace KlayGE
 		cbv_srv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 		cbv_srv_heap_desc.NodeMask = 0;
 		ID3D12DescriptorHeap* csu_heap;
-		TIF(d3d_device_->CreateDescriptorHeap(&cbv_srv_heap_desc, IID_ID3D12DescriptorHeap, reinterpret_cast<void**>(&csu_heap)));
+		TIFHR(d3d_device_->CreateDescriptorHeap(&cbv_srv_heap_desc, IID_ID3D12DescriptorHeap, reinterpret_cast<void**>(&csu_heap)));
 		ID3D12DescriptorHeapPtr cbv_srv_uav_heap = MakeCOMPtr(csu_heap);
-		cbv_srv_uav_heap_cache_.push_back(cbv_srv_uav_heap);
+		curr_render_cmd_allocator_->cbv_srv_uav_heap_cache_.push_back(cbv_srv_uav_heap);
 		return cbv_srv_uav_heap;
+	}
+
+	ID3D12ResourcePtr D3D12RenderEngine::AllocTempBuffer(bool is_upload, uint32_t size_in_byte)
+	{
+		ID3D12ResourcePtr ret;
+
+		auto& buffs = (is_upload) ? temp_upload_free_buffs_ : temp_readback_free_buffs_;
+
+		auto iter = buffs.lower_bound(size_in_byte);
+		if ((iter != buffs.end()) && (iter->first == size_in_byte))
+		{
+			ret = iter->second;
+
+			buffs.erase(iter);
+		}
+		else
+		{
+			D3D12_RESOURCE_STATES init_state;
+			D3D12_HEAP_PROPERTIES heap_prop;
+			if (is_upload)
+			{
+				init_state = D3D12_RESOURCE_STATE_GENERIC_READ;
+				heap_prop.Type = D3D12_HEAP_TYPE_UPLOAD;
+			}
+			else
+			{
+				init_state = D3D12_RESOURCE_STATE_COPY_DEST;
+				heap_prop.Type = D3D12_HEAP_TYPE_READBACK;
+			}
+			heap_prop.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+			heap_prop.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+			heap_prop.CreationNodeMask = 0;
+			heap_prop.VisibleNodeMask = 0;
+
+			D3D12_RESOURCE_DESC res_desc;
+			res_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+			res_desc.Alignment = 0;
+			res_desc.Width = size_in_byte;
+			res_desc.Height = 1;
+			res_desc.DepthOrArraySize = 1;
+			res_desc.MipLevels = 1;
+			res_desc.Format = DXGI_FORMAT_UNKNOWN;
+			res_desc.SampleDesc.Count = 1;
+			res_desc.SampleDesc.Quality = 0;
+			res_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+			res_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+			ID3D12Resource* buffer;
+			TIFHR(d3d_device_->CreateCommittedResource(&heap_prop, D3D12_HEAP_FLAG_NONE,
+				&res_desc, init_state, nullptr,
+				IID_ID3D12Resource, reinterpret_cast<void**>(&buffer)));
+			ret = MakeCOMPtr(buffer);
+		}
+
+		return ret;
+	}
+
+	void D3D12RenderEngine::RecycleTempBuffer(ID3D12ResourcePtr const & buff, bool is_upload, uint32_t size_in_byte)
+	{
+		if (buff)
+		{
+			auto& buffs = is_upload ? curr_render_cmd_allocator_->recycle_after_sync_upload_buffs_
+				: curr_render_cmd_allocator_->recycle_after_sync_readback_buffs_;
+			buffs.emplace_back(buff, size_in_byte);
+		}
+	}
+	
+	void D3D12RenderEngine::ReleaseAfterSync(ID3D12ResourcePtr const & buff)
+	{
+		if (buff)
+		{
+			curr_render_cmd_allocator_->release_after_sync_buffs_.push_back(buff);
+		}
+	}
+
+	std::vector<D3D12_RESOURCE_BARRIER>* D3D12RenderEngine::FindResourceBarriers(ID3D12GraphicsCommandList* cmd_list, bool allow_creation)
+	{
+		auto iter = res_barriers_.begin();
+		for (; iter != res_barriers_.end(); ++ iter)
+		{
+			if (iter->first == cmd_list)
+			{
+				break;
+			}
+		}
+
+		std::vector<D3D12_RESOURCE_BARRIER>* ret;
+		if (iter == res_barriers_.end())
+		{
+			if (allow_creation)
+			{
+				res_barriers_.push_back(std::make_pair(cmd_list, std::vector<D3D12_RESOURCE_BARRIER>()));
+				ret = &res_barriers_.back().second;
+			}
+			else
+			{
+				ret = nullptr;
+			}
+		}
+		else
+		{
+			ret = &iter->second;
+		}
+
+		return ret;
+	}
+
+	void D3D12RenderEngine::AddResourceBarrier(ID3D12GraphicsCommandList* cmd_list, ArrayRef<D3D12_RESOURCE_BARRIER> barriers)
+	{
+		auto* res_barriers = this->FindResourceBarriers(cmd_list, true);
+		BOOST_ASSERT(res_barriers != nullptr);
+		res_barriers->insert(res_barriers->end(), barriers.begin(), barriers.end());
+	}
+
+	void D3D12RenderEngine::FlushResourceBarriers(ID3D12GraphicsCommandList* cmd_list)
+	{
+		auto* res_barriers = this->FindResourceBarriers(cmd_list, false);
+		if (res_barriers && !res_barriers->empty())
+		{
+			cmd_list->ResourceBarrier(static_cast<UINT>(res_barriers->size()), res_barriers->data());
+			res_barriers->clear();
+		}
+	}
+
+	std::shared_ptr<D3D12RenderEngine::CmdAllocatorDependencies> D3D12RenderEngine::AllocCmdAllocator()
+	{
+		std::shared_ptr<CmdAllocatorDependencies> ret;
+		for (auto iter = d3d_render_cmd_allocators_.begin(); iter != d3d_render_cmd_allocators_.end(); ++ iter)
+		{
+			if (render_cmd_fence_->Completed(iter->second))
+			{
+				ret = iter->first;
+				d3d_render_cmd_allocators_.erase(iter);
+				ret->cmd_allocator->Reset();
+				break;
+			}
+		}
+
+		if (!ret)
+		{
+			ret = MakeSharedPtr<CmdAllocatorDependencies>();
+
+			ID3D12CommandAllocator* d3d_render_cmd_allocator;
+			TIFHR(d3d_device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+				IID_ID3D12CommandAllocator, reinterpret_cast<void**>(&d3d_render_cmd_allocator)));
+			ret->cmd_allocator = MakeCOMPtr(d3d_render_cmd_allocator);
+		}
+
+		return ret;
+	}
+
+	void D3D12RenderEngine::RecycleCmdAllocator(std::shared_ptr<CmdAllocatorDependencies> const & cmd_allocator, uint64_t fence_val)
+	{
+		if (cmd_allocator)
+		{
+			d3d_render_cmd_allocators_.emplace_back(cmd_allocator, fence_val);
+		}
 	}
 }

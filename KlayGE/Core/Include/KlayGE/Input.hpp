@@ -37,33 +37,15 @@
 
 #include <KFL/Vector.hpp>
 #include <KFL/Timer.hpp>
+#include <KlayGE/Signal.hpp>
 
-#if defined(KLAYGE_COMPILER_CLANG)
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wunused-parameter" // Ignore unused parameter in boost
+#if defined(KLAYGE_COMPILER_GCC)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstrict-aliasing" // Ignore aliasing in flat_tree.hpp
 #endif
 #include <boost/container/flat_map.hpp>
-#if defined(KLAYGE_COMPILER_CLANG)
-#pragma clang diagnostic pop
-#endif
-#if defined(KLAYGE_COMPILER_MSVC)
-#pragma warning(push)
-#pragma warning(disable: 4512) // boost::iterators::function_output_iterator<T>::output_proxy doesn't have assignment operator
-#pragma warning(disable: 4913) // User defined binary operator ',' exists but no overload could convert all operands
-#elif defined(KLAYGE_COMPILER_GCC)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations" // Ignore auto_ptr declaration
-#elif defined(KLAYGE_COMPILER_CLANG)
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wunused-parameter" // Ignore unused parameter in boost
-#endif
-#include <boost/signals2.hpp>
-#if defined(KLAYGE_COMPILER_MSVC)
-#pragma warning(pop)
-#elif defined(KLAYGE_COMPILER_GCC)
+#if defined(KLAYGE_COMPILER_GCC)
 #pragma GCC diagnostic pop
-#elif defined(KLAYGE_COMPILER_CLANG)
-#pragma clang diagnostic pop
 #endif
 
 #include <vector>
@@ -338,7 +320,17 @@ namespace KlayGE
 		SS_AnySensing
 	};
 
-	typedef std::pair<uint16_t, uint16_t> InputActionDefine;
+	struct KLAYGE_CORE_API InputActionDefine
+	{
+		InputActionDefine(uint32_t a, uint32_t s)
+			: action(static_cast<uint16_t>(a)), semantic(static_cast<uint16_t>(s))
+		{
+		}
+
+		uint16_t action;
+		uint16_t semantic;
+	};
+
 	typedef std::pair<uint16_t, InputActionParamPtr> InputAction;
 	typedef std::vector<InputAction> InputActionsType;
 
@@ -368,13 +360,13 @@ namespace KlayGE
 		boost::container::flat_map<uint16_t, uint16_t> actionMap_;
 	};
 
-	typedef boost::signals2::signal<void(InputEngine const & sender, InputAction const & action)> input_signal;
+	typedef Signal::Signal<void(InputEngine const& sender, InputAction const& action)> input_signal;
 	typedef std::shared_ptr<input_signal> action_handler_t;
 	typedef boost::container::flat_map<uint32_t, InputActionMap> action_maps_t;
 
 	//  ‰»Î“˝«Ê
 	/////////////////////////////////////////////////////////////////////////////////
-	class KLAYGE_CORE_API InputEngine
+	class KLAYGE_CORE_API InputEngine : boost::noncopyable
 	{
 	public:
 		enum InputDeviceType
@@ -417,7 +409,7 @@ namespace KlayGE
 		float elapsed_time_;
 	};
 
-	class KLAYGE_CORE_API InputDevice
+	class KLAYGE_CORE_API InputDevice : boost::noncopyable
 	{
 	public:
 		virtual ~InputDevice();

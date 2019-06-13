@@ -74,6 +74,7 @@
 #pragma once
 
 #include <KlayGE/PreDeclare.hpp>
+#include <KFL/CXX17/string_view.hpp>
 #include <KlayGE/RenderDeviceCaps.hpp>
 #include <KlayGE/RenderSettings.hpp>
 #include <KFL/Color.hpp>
@@ -82,7 +83,7 @@
 
 namespace KlayGE
 {
-	class KLAYGE_CORE_API RenderEngine
+	class KLAYGE_CORE_API RenderEngine : boost::noncopyable
 	{
 	public:
 		RenderEngine();
@@ -103,7 +104,6 @@ namespace KlayGE
 			GraphicsBufferPtr const & buff_args, uint32_t offset);
 		virtual void EndPass();
 		virtual void EndFrame();
-		virtual void UpdateGPUTimestampsFrequency();
 
 		// Just for debug or profile propose
 		virtual void ForceFlush() = 0;
@@ -116,9 +116,7 @@ namespace KlayGE
 		void CreateRenderWindow(std::string const & name, RenderSettings& settings);
 		void DestroyRenderWindow();
 
-		void SetStateObjects(RasterizerStateObjectPtr const & rs_obj,
-			DepthStencilStateObjectPtr const & dss_obj, uint16_t front_stencil_ref, uint16_t back_stencil_ref,
-			BlendStateObjectPtr const & bs_obj, Color const & blend_factor, uint32_t sample_mask);
+		void SetStateObject(RenderStateObjectPtr const & rs_obj);
 
 		void BindFrameBuffer(FrameBufferPtr const & fb);
 		FrameBufferPtr const & CurFrameBuffer() const;
@@ -136,8 +134,8 @@ namespace KlayGE
 		// Scissor support
 		virtual void ScissorRect(uint32_t x, uint32_t y, uint32_t width, uint32_t height) = 0;
 
-		virtual void GetCustomAttrib(std::string const & name, void* value);
-		virtual void SetCustomAttrib(std::string const & name, void* value);
+		virtual void GetCustomAttrib(std::string_view name, void* value) const;
+		virtual void SetCustomAttrib(std::string_view name, void* value);
 
 		void Resize(uint32_t width, uint32_t height);
 		virtual bool FullScreen() const = 0;
@@ -151,7 +149,7 @@ namespace KlayGE
 		{
 			return native_shader_version_;
 		}
-		std::string NativeShaderPlatformName() const
+		std::string_view NativeShaderPlatformName() const
 		{
 			return native_shader_platform_name_;
 		}
@@ -187,45 +185,20 @@ namespace KlayGE
 		{
 		}
 
-		void Stereoscopic();
+		void ConvertToDisplay();
 
-		uint32_t NumMotionFrames() const
-		{
-			return motion_frames_;
-		}
-
-		RasterizerStateObjectPtr const & CurRSObj() const
+		RenderStateObjectPtr const & CurRenderStateObject() const
 		{
 			return cur_rs_obj_;
-		}
-		DepthStencilStateObjectPtr const & CurDSSObj() const
-		{
-			return cur_dss_obj_;
-		}
-		uint16_t CurFrontStencilRef() const
-		{
-			return cur_front_stencil_ref_;
-		}
-		uint16_t CurBackStencilRef() const
-		{
-			return cur_back_stencil_ref_;
-		}
-		BlendStateObjectPtr const & CurBSObj() const
-		{
-			return cur_bs_obj_;
-		}
-		Color const & CurBlendFactor() const
-		{
-			return cur_blend_factor_;
-		}
-		uint32_t CurSampleMask() const
-		{
-			return cur_sample_mask_;
 		}
 
 		RenderLayoutPtr const & PostProcessRenderLayout() const
 		{
 			return pp_rl_;
+		}
+		RenderLayoutPtr const & VolumetricPostProcessRenderLayout() const
+		{
+			return vpp_rl_;
 		}
 
 		StereoMethod Stereo() const
@@ -258,13 +231,144 @@ namespace KlayGE
 		{
 			ovr_scale_ = scale;
 		}
-		
+
+		DisplayOutputMethod DisplayOutput() const
+		{
+			return display_output_method_;
+		}
+		void DisplayOutput(DisplayOutputMethod method);
+		void PaperWhiteNits(uint32_t nits);
+		uint32_t PaperWhiteNits() const
+		{
+			return paper_white_;
+		}
+		void DisplayMaxLuminanceNits(uint32_t nits);
+		uint32_t DisplayMaxLuminanceNits() const
+		{
+			return display_max_luminance_;
+		}
+		float HDRRescale() const
+		{
+			return hdr_rescale_;
+		}
+
 		// For debug only
 		void ForceLineMode(bool line);
 		bool ForceLineMode() const
 		{
 			return force_line_mode_;
 		}
+
+		RenderMaterialPtr const& DefaultMaterial() const;
+
+		class KLAYGE_CORE_API PredefinedMaterialCBuffer
+		{
+		public:
+			PredefinedMaterialCBuffer();
+
+			RenderEffectConstantBuffer* CBuffer() const
+			{
+				return predefined_cbuffer_;
+			}
+
+			float4& AlbedoClr(RenderEffectConstantBuffer& cbuff) const;
+			float3& MetalnessGlossinessFactor(RenderEffectConstantBuffer& cbuff) const;
+			float4& EmissiveClr(RenderEffectConstantBuffer& cbuff) const;
+			int32_t& AlbedoMapEnabled(RenderEffectConstantBuffer& cbuff) const;
+			int32_t& NormalMapEnabled(RenderEffectConstantBuffer& cbuff) const;
+			int32_t& HeightMapParallaxEnabled(RenderEffectConstantBuffer& cbuff) const;
+			int32_t& HeightMapTessEnabled(RenderEffectConstantBuffer& cbuff) const;
+			int32_t& OcclusionMapEnabled(RenderEffectConstantBuffer& cbuff) const;
+			float& AlphaTestThreshold(RenderEffectConstantBuffer& cbuff) const;
+			float& NormalScale(RenderEffectConstantBuffer& cbuff) const;
+			float& OcclusionStrength(RenderEffectConstantBuffer& cbuff) const;
+			float2& HeightOffsetScale(RenderEffectConstantBuffer& cbuff) const;
+			float4& TessFactors(RenderEffectConstantBuffer& cbuff) const;
+
+		private:
+			RenderEffectPtr effect_;
+			RenderEffectConstantBuffer* predefined_cbuffer_;
+
+			uint32_t albedo_clr_offset_;
+			uint32_t metalness_glossiness_factor_offset_;
+			uint32_t emissive_clr_offset_;
+			uint32_t albedo_map_enabled_offset_;
+			uint32_t normal_map_enabled_offset_;
+			uint32_t height_map_parallax_enabled_offset_;
+			uint32_t height_map_tess_enabled_offset_;
+			uint32_t occlusion_map_enabled_offset_;
+			uint32_t alpha_test_threshold_offset_;
+			uint32_t normal_scale_offset_;
+			uint32_t occlusion_strength_offset_;
+			uint32_t height_offset_scale_offset_;
+			uint32_t tess_factors_offset_;
+		};
+
+		PredefinedMaterialCBuffer const& PredefinedMaterialCBufferInstance() const;
+
+		class KLAYGE_CORE_API PredefinedMeshCBuffer
+		{
+		public:
+			PredefinedMeshCBuffer();
+
+			RenderEffectConstantBuffer* CBuffer() const
+			{
+				return predefined_cbuffer_;
+			}
+
+			float3& PosCenter(RenderEffectConstantBuffer& cbuff) const;
+			float3& PosExtent(RenderEffectConstantBuffer& cbuff) const;
+			float2& TcCenter(RenderEffectConstantBuffer& cbuff) const;
+			float2& TcExtent(RenderEffectConstantBuffer& cbuff) const;
+
+		private:
+			RenderEffectPtr effect_;
+			RenderEffectConstantBuffer* predefined_cbuffer_;
+
+			uint32_t pos_center_offset_;
+			uint32_t pos_extent_offset_;
+			uint32_t tc_center_offset_;
+			uint32_t tc_extent_offset_;
+		};
+
+		PredefinedMeshCBuffer const& PredefinedMeshCBufferInstance() const;
+
+		class KLAYGE_CORE_API PredefinedModelCameraCBuffer
+		{
+		public:
+			PredefinedModelCameraCBuffer();
+
+			RenderEffectConstantBuffer* CBuffer() const
+			{
+				return predefined_cbuffer_;
+			}
+
+			float4x4& Model(RenderEffectConstantBuffer& cbuff) const;
+			float4x4& ModelView(RenderEffectConstantBuffer& cbuff) const;
+			float4x4& Mvp(RenderEffectConstantBuffer& cbuff) const;
+			float4x4& InvModel(RenderEffectConstantBuffer& cbuff) const;
+			float4x4& InvMv(RenderEffectConstantBuffer& cbuff) const;
+			float4x4& InvMvp(RenderEffectConstantBuffer& cbuff) const;
+			float3& EyePos(RenderEffectConstantBuffer& cbuff) const;
+			float3& ForwardVec(RenderEffectConstantBuffer& cbuff) const;
+			float3& UpVec(RenderEffectConstantBuffer& cbuff) const;
+
+		private:
+			RenderEffectPtr effect_;
+			RenderEffectConstantBuffer* predefined_cbuffer_;
+
+			uint32_t model_offset_;
+			uint32_t model_view_offset_;
+			uint32_t mvp_offset_;
+			uint32_t inv_model_offset_;
+			uint32_t inv_mv_offset_;
+			uint32_t inv_mvp_offset_;
+			uint32_t eye_pos_offset_;
+			uint32_t forward_vec_offset_;
+			uint32_t up_vec_offset_;
+		};
+
+		PredefinedModelCameraCBuffer const& PredefinedModelCameraCBufferInstance() const;
 
 	protected:
 		void Destroy();
@@ -287,14 +391,17 @@ namespace KlayGE
 		virtual void DoSuspend() = 0;
 		virtual void DoResume() = 0;
 
+		void UpdateHDRRescale();
+
 	protected:
 		FrameBufferPtr cur_frame_buffer_;
 		FrameBufferPtr screen_frame_buffer_;
+		SceneNodePtr screen_frame_buffer_camera_node_;
 		TexturePtr ds_tex_;
 		FrameBufferPtr hdr_frame_buffer_;
 		TexturePtr hdr_tex_;
-		FrameBufferPtr ldr_frame_buffer_;
-		TexturePtr ldr_tex_;
+		FrameBufferPtr post_tone_mapping_frame_buffer_;
+		TexturePtr post_tone_mapping_tex_;
 		FrameBufferPtr resize_frame_buffer_;
 		TexturePtr resize_tex_;
 		FrameBufferPtr mono_frame_buffer_;
@@ -303,6 +410,9 @@ namespace KlayGE
 
 		FrameBufferPtr overlay_frame_buffer_;
 		TexturePtr overlay_tex_;
+
+		TexturePtr smaa_edges_tex_;
+		TexturePtr smaa_blend_tex_;
 
 		RenderLayoutPtr so_buffers_;
 
@@ -313,20 +423,12 @@ namespace KlayGE
 
 		RenderDeviceCaps caps_;
 
-		RasterizerStateObjectPtr cur_rs_obj_;
-		RasterizerStateObjectPtr cur_line_rs_obj_;
-		DepthStencilStateObjectPtr cur_dss_obj_;
-		uint16_t cur_front_stencil_ref_;
-		uint16_t cur_back_stencil_ref_;
-		BlendStateObjectPtr cur_bs_obj_;
-		Color cur_blend_factor_;
-		uint32_t cur_sample_mask_;
+		RenderStateObjectPtr cur_rs_obj_;
+		RenderStateObjectPtr cur_line_rs_obj_;
 
 		float default_fov_;
 		float default_render_width_scale_;
 		float default_render_height_scale_;
-
-		uint32_t motion_frames_;
 
 		StereoMethod stereo_method_;
 		float stereo_separation_;
@@ -336,34 +438,50 @@ namespace KlayGE
 		float ovr_x_center_offset_;
 		float ovr_scale_;
 
+		DisplayOutputMethod display_output_method_;
+		uint32_t paper_white_;
+		uint32_t display_max_luminance_;
+		float hdr_rescale_;
+
 		RenderLayoutPtr pp_rl_;
+		RenderLayoutPtr vpp_rl_;
 
 		PostProcessPtr hdr_pp_;
 		PostProcessPtr skip_hdr_pp_;
 		bool hdr_enabled_;
-		PostProcessPtr ldr_pp_;
+		PostProcessPtr smaa_edge_detection_pp_;
+		PostProcessPtr smaa_blending_weight_pp_;
+		PostProcessPtr post_tone_mapping_pp_;
 		int ppaa_enabled_;
 		bool gamma_enabled_;
 		bool color_grading_enabled_;
 		PostProcessPtr resize_pps_[2];
+		PostProcessPtr hdr_display_pp_;
 		PostProcessPtr stereoscopic_pp_;
 		int fb_stage_;
 		bool pp_chain_dirty_;
 
-		PostProcessPtr ldr_pps_[12];
+		PostProcessPtr post_tone_mapping_pps_[12];
 
 		bool force_line_mode_;
 
 		uint32_t native_shader_fourcc_;
 		uint32_t native_shader_version_;
-		std::string native_shader_platform_name_;
+		std::string_view native_shader_platform_name_;
 
 #ifndef KLAYGE_SHIP
 		PerfRangePtr hdr_pp_perf_;
-		PerfRangePtr ldr_pp_perf_;
+		PerfRangePtr smaa_pp_perf_;
+		PerfRangePtr post_tone_mapping_pp_perf_;
 		PerfRangePtr resize_pp_perf_;
+		PerfRangePtr hdr_display_pp_perf_;
 		PerfRangePtr stereoscopic_pp_perf_;
 #endif
+
+		mutable RenderMaterialPtr default_material_;
+		mutable std::unique_ptr<PredefinedMaterialCBuffer> predefined_material_cb_;
+		mutable std::unique_ptr<PredefinedMeshCBuffer> predefined_mesh_cb_;
+		mutable std::unique_ptr<PredefinedModelCameraCBuffer> predefined_model_camera_cb_;
 	};
 }
 

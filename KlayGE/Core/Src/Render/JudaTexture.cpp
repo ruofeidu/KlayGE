@@ -11,17 +11,17 @@
 /////////////////////////////////////////////////////////////////////////////////
 
 #include <KlayGE/KlayGE.hpp>
-#include <KFL/ThrowErr.hpp>
+#include <KFL/ErrorHandling.hpp>
 #include <KlayGE/ResLoader.hpp>
 #include <KlayGE/RenderFactory.hpp>
 #include <KlayGE/RenderEngine.hpp>
 #include <KlayGE/RenderEffect.hpp>
-#include <KlayGE/TexCompressionBC.hpp>
 
 #include <fstream>
 #include <cstring>
+#include <string>
+
 #include <boost/assert.hpp>
-#include <boost/lexical_cast.hpp>
 
 #include <KlayGE/JudaTexture.hpp>
 
@@ -162,8 +162,7 @@ namespace KlayGE
 			break;
 
 		default:
-			BOOST_ASSERT(false);
-			break;
+			KFL_UNREACHABLE("Not supported element format");
 		}
 
 		tree_levels_ = 0;
@@ -651,27 +650,27 @@ namespace KlayGE
 				}
 
 				uint32_t const full_tile_bytes = tile_size_ * tile_size_ * texel_size_;
-				std::shared_ptr<std::vector<uint8_t>> data = MakeSharedPtr<std::vector<uint8_t>>(full_tile_bytes);
+				auto data = MakeUniquePtr<uint8_t[]>(full_tile_bytes);
 				if (data_index != EMPTY_DATA_INDEX)
 				{
 					uint64_t offsets[2];
 					input_file_->seekg(data_blocks_offset_ + data_index * sizeof(uint64_t), std::ios_base::beg);
 					input_file_->read(offsets, sizeof(offsets));
 					uint32_t const comed_len = static_cast<uint32_t>(offsets[1] - offsets[0]);
-					std::vector<uint8_t> comed_data(comed_len);
+					auto comed_data = MakeUniquePtr<uint8_t[]>(comed_len);
 					input_file_->seekg(offsets[0], std::ios_base::beg);
-					input_file_->read(&comed_data[0], comed_len);
-					lzma_dec_.Decode(&(*data)[0], &comed_data[0], comed_len, full_tile_bytes);
+					input_file_->read(comed_data.get(), comed_len);
+					lzma_dec_.Decode(data.get(), MakeArrayRef(comed_data.get(), comed_len), full_tile_bytes);
 				}
 				else
 				{
-					memset(&(*data)[0], 0, full_tile_bytes);
+					memset(data.get(), 0, full_tile_bytes);
 				}
 
-				iter = decoded_block_cache_.emplace(data_index, DecodedBlockInfo(data, decode_tick_)).first;
+				iter = decoded_block_cache_.emplace(data_index, DecodedBlockInfo(std::move(data), decode_tick_)).first;
 			}
 
-			return &(*iter->second.data)[0];
+			return iter->second.data.get();
 		}
 		else
 		{
@@ -1118,7 +1117,7 @@ namespace KlayGE
 			std::vector<uint8_t> const & data = juda_tex->data_blocks_[non_empty_block_data_index[i]];
 
 			std::vector<uint8_t> comed_data;
-			lzma_enc.Encode(comed_data, &data[0], data.size());
+			lzma_enc.Encode(comed_data, data);
 
 			uint32_t comed_len = static_cast<uint32_t>(comed_data.size());
 			block_start_pos[i + 1] = block_start_pos[i] + comed_len;
@@ -1161,20 +1160,19 @@ namespace KlayGE
 				switch (format)
 				{
 				case EF_BC1:
-					tex_codec_ = MakeSharedPtr<TexCompressionBC1>();
+					tex_codec_ = MakeUniquePtr<TexCompressionBC1>();
 					break;
 
 				case EF_BC2:
-					tex_codec_ = MakeSharedPtr<TexCompressionBC2>();
+					tex_codec_ = MakeUniquePtr<TexCompressionBC2>();
 					break;
 
 				case EF_BC3:
-					tex_codec_ = MakeSharedPtr<TexCompressionBC3>();
+					tex_codec_ = MakeUniquePtr<TexCompressionBC3>();
 					break;
 
 				default:
-					BOOST_ASSERT(false);
-					break;
+					KFL_UNREACHABLE("Not supported compression format");
 				}
 
 				// BC format must be multiply of 4
@@ -1192,18 +1190,19 @@ namespace KlayGE
 			if (caps.max_texture_array_length > array_size)
 			{
 				tex_cache_ = rf.MakeTexture2D(tile_with_border_size * s, tile_with_border_size * s, mipmap,
-					std::max(array_size, 2U), format, 1, 0, EAH_GPU_Read, nullptr);
+					std::max(array_size, 2U), format, 1, 0, EAH_GPU_Read);
 			}
 			else
 			{
 				tex_cache_array_.resize(array_size);
 				for (uint32_t i = 0; i < array_size; ++ i)
 				{
-					tex_cache_array_[i] = rf.MakeTexture2D(tile_with_border_size * s, tile_with_border_size * s, mipmap, 1, format, 1, 0, EAH_GPU_Read, nullptr);
+					tex_cache_array_[i] = rf.MakeTexture2D(tile_with_border_size * s, tile_with_border_size * s, mipmap, 1, format, 1, 0,
+						EAH_GPU_Read);
 				}
 			}
 
-			tex_indirect_ = rf.MakeTexture2D(num_tiles_, num_tiles_, 1, 1, EF_ABGR8, 1, 0, EAH_GPU_Read, nullptr);
+			tex_indirect_ = rf.MakeTexture2D(num_tiles_, num_tiles_, 1, 1, EF_ABGR8, 1, 0, EAH_GPU_Read);
 
 			tile_free_list_.emplace_back(0, pages);
 		}
@@ -1235,8 +1234,7 @@ namespace KlayGE
 		{
 			for (size_t i = 0; i < tex_cache_array_.size(); ++ i)
 			{
-				*(effect.ParameterByName("juda_tex_cache_" + boost::lexical_cast<std::string>(i)))
-					= tex_cache_array_[i];
+				*(effect.ParameterByName("juda_tex_cache_" + std::to_string(i))) = tex_cache_array_[i];
 			}
 			*(effect.ParameterByName("inv_juda_tex_cache_size")) = float2(1.0f / tex_cache_array_[0]->Width(0), 1.0f / tex_cache_array_[0]->Height(0));
 		}
@@ -1566,8 +1564,7 @@ namespace KlayGE
 								break;
 
 							default:
-								BOOST_ASSERT(false);
-								break;
+								KFL_UNREACHABLE("Invalid texture addressing mode");
 							}
 							switch (addr_v)
 							{
@@ -1602,8 +1599,7 @@ namespace KlayGE
 								break;
 
 							default:
-								BOOST_ASSERT(false);
-								break;
+								KFL_UNREACHABLE("Invalid texture addressing mode");
 							}
 
 							for (uint32_t y = 0; y < mip_border_size; ++ y)
@@ -1681,8 +1677,7 @@ namespace KlayGE
 								break;
 
 							default:
-								BOOST_ASSERT(false);
-								break;
+								KFL_UNREACHABLE("Invalid texture addressing mode");
 							}
 							switch (addr_v)
 							{
@@ -1717,8 +1712,7 @@ namespace KlayGE
 								break;
 
 							default:
-								BOOST_ASSERT(false);
-								break;
+								KFL_UNREACHABLE("Invalid texture addressing mode");
 							}
 
 							for (uint32_t y = 0; y < mip_border_size; ++ y)
@@ -1793,8 +1787,7 @@ namespace KlayGE
 								break;
 
 							default:
-								BOOST_ASSERT(false);
-								break;
+								KFL_UNREACHABLE("Invalid texture addressing mode");
 							}
 							switch (addr_v)
 							{
@@ -1829,8 +1822,7 @@ namespace KlayGE
 								break;
 
 							default:
-								BOOST_ASSERT(false);
-								break;
+								KFL_UNREACHABLE("Invalid texture addressing mode");
 							}
 
 							for (uint32_t y = 0; y < mip_border_size; ++ y)
@@ -1909,8 +1901,7 @@ namespace KlayGE
 								break;
 
 							default:
-								BOOST_ASSERT(false);
-								break;
+								KFL_UNREACHABLE("Invalid texture addressing mode");
 							}
 							switch (addr_v)
 							{
@@ -1945,8 +1936,7 @@ namespace KlayGE
 								break;
 
 							default:
-								BOOST_ASSERT(false);
-								break;
+								KFL_UNREACHABLE("Invalid texture addressing mode");
 							}
 
 							for (uint32_t y = 0; y < mip_tile_size; ++ y)
@@ -2024,8 +2014,7 @@ namespace KlayGE
 								break;
 
 							default:
-								BOOST_ASSERT(false);
-								break;
+								KFL_UNREACHABLE("Invalid texture addressing mode");
 							}
 							switch (addr_v)
 							{
@@ -2060,8 +2049,7 @@ namespace KlayGE
 								break;
 
 							default:
-								BOOST_ASSERT(false);
-								break;
+								KFL_UNREACHABLE("Invalid texture addressing mode");
 							}
 
 							for (uint32_t y = 0; y < mip_tile_size; ++ y)
@@ -2140,8 +2128,7 @@ namespace KlayGE
 								break;
 
 							default:
-								BOOST_ASSERT(false);
-								break;
+								KFL_UNREACHABLE("Invalid texture addressing mode");
 							}
 							switch (addr_v)
 							{
@@ -2176,8 +2163,7 @@ namespace KlayGE
 								break;
 
 							default:
-								BOOST_ASSERT(false);
-								break;
+								KFL_UNREACHABLE("Invalid texture addressing mode");
 							}
 
 							for (uint32_t y = 0; y < mip_border_size; ++ y)
@@ -2255,8 +2241,7 @@ namespace KlayGE
 								break;
 
 							default:
-								BOOST_ASSERT(false);
-								break;
+								KFL_UNREACHABLE("Invalid texture addressing mode");
 							}
 							switch (addr_v)
 							{
@@ -2291,8 +2276,7 @@ namespace KlayGE
 								break;
 
 							default:
-								BOOST_ASSERT(false);
-								break;
+								KFL_UNREACHABLE("Invalid texture addressing mode");
 							}
 
 							for (uint32_t y = 0; y < mip_border_size; ++ y)
@@ -2367,8 +2351,7 @@ namespace KlayGE
 								break;
 
 							default:
-								BOOST_ASSERT(false);
-								break;
+								KFL_UNREACHABLE("Invalid texture addressing mode");
 							}
 							switch (addr_v)
 							{
@@ -2403,8 +2386,7 @@ namespace KlayGE
 								break;
 
 							default:
-								BOOST_ASSERT(false);
-								break;
+								KFL_UNREACHABLE("Invalid texture addressing mode");
 							}
 
 							for (uint32_t y = 0; y < mip_border_size; ++ y)
@@ -2462,9 +2444,9 @@ namespace KlayGE
 
 				if (IsCompressedFormat(format))
 				{
-					uint32_t const block_width = tex_codec_->BlockWidth();
-					uint32_t const block_height = tex_codec_->BlockHeight();
-					uint32_t const block_bytes = NumFormatBytes(format) * 4;
+					uint32_t const block_width = BlockWidth(format);
+					uint32_t const block_height = BlockHeight(format);
+					uint32_t const block_bytes = BlockBytes(format);
 					uint32_t const bc_row_pitch = (mip_tile_with_border_size + block_width - 1) / block_width * block_bytes;
 					uint32_t const bc_slice_pitch = (mip_tile_with_border_size + block_height - 1) / block_height * bc_row_pitch;
 					std::vector<uint8_t> bc(bc_slice_pitch);
@@ -2539,10 +2521,7 @@ namespace KlayGE
 							break;
 
 						default:
-							BOOST_ASSERT(false);
-							p_argb = nullptr;
-							row_pitch = slice_pitch = 0;
-							break;
+							KFL_UNREACHABLE("Not supported element format");
 						}
 
 						tex_codec_->EncodeMem(mip_tile_with_border_size, mip_tile_with_border_size,

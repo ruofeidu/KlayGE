@@ -20,8 +20,8 @@
 /////////////////////////////////////////////////////////////////////////////////
 
 #include <KlayGE/KlayGE.hpp>
+#include <KFL/ErrorHandling.hpp>
 #include <KFL/Util.hpp>
-#include <KFL/ThrowErr.hpp>
 #include <KlayGE/Context.hpp>
 #include <KFL/Math.hpp>
 #include <KlayGE/RenderEngine.hpp>
@@ -70,11 +70,18 @@ namespace KlayGE
 		height_ = height;
 		depth_ = depth;
 
-		glGenBuffers(1, &pbo_);
+		if (glloader_GL_VERSION_4_5() || glloader_GL_ARB_direct_state_access())
+		{
+			glCreateBuffers(1, &pbo_);
+		}
+		else
+		{
+			glGenBuffers(1, &pbo_);
+		}
 
 		mipmap_start_offset_.resize(num_mip_maps_ + 1);
 		mipmap_start_offset_[0] = 0;
-		for (uint32_t level = 0; level < num_mip_maps_; ++level)
+		for (uint32_t level = 0; level < num_mip_maps_; ++ level)
 		{
 			uint32_t const w = this->Width(level);
 			uint32_t const h = this->Height(level);
@@ -142,7 +149,7 @@ namespace KlayGE
 		if ((format_ == target.Format()) && !IsCompressedFormat(format_) && (glloader_GL_VERSION_4_3() || glloader_GL_ARB_copy_image())
 			&& (src_width == dst_width) && (src_height == dst_height) && (src_depth == dst_depth) && (1 == sample_count_))
 		{
-			OGLTexture& ogl_target = *checked_cast<OGLTexture*>(&target);
+			OGLTexture& ogl_target = checked_cast<OGLTexture&>(target);
 			glCopyImageSubData(
 				texture_, target_type_, src_level,
 				src_x_offset, src_y_offset, src_z_offset,
@@ -151,9 +158,10 @@ namespace KlayGE
 		}
 		else
 		{
-			OGLRenderEngine& re = *checked_cast<OGLRenderEngine*>(&Context::Instance().RenderFactoryInstance().RenderEngineInstance());
 			if (!IsCompressedFormat(format_) && (glloader_GL_ARB_texture_rg() || (4 == NumComponents(format_))))
 			{
+				auto& re = checked_cast<OGLRenderEngine&>(Context::Instance().RenderFactoryInstance().RenderEngineInstance());
+
 				GLuint fbo_src, fbo_dst;
 				re.GetFBOForBlit(fbo_src, fbo_dst);
 
@@ -165,7 +173,8 @@ namespace KlayGE
 					glFramebufferTexture3D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target_type_, texture_, src_level, src_z_offset + depth);
 
 					glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo_dst);
-					glFramebufferTexture3D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target_type_, checked_cast<OGLTexture*>(&target)->GLTexture(), dst_level, dst_z_offset + depth);
+					glFramebufferTexture3D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target_type_,
+						checked_cast<OGLTexture&>(target).GLTexture(), dst_level, dst_z_offset + depth);
 
 					glBlitFramebuffer(src_x_offset, src_y_offset, src_x_offset + src_width, src_y_offset + src_height,
 									dst_x_offset, dst_y_offset, dst_x_offset + dst_width, dst_y_offset + dst_height,
@@ -257,7 +266,8 @@ namespace KlayGE
 		slice_pitch = row_pitch * h;
 
 		uint8_t* p;
-		OGLRenderEngine& re = *checked_cast<OGLRenderEngine*>(&Context::Instance().RenderFactoryInstance().RenderEngineInstance());
+		GLintptr const subres_offset = array_index * mipmap_start_offset_.back() + mipmap_start_offset_[level];
+		auto& re = checked_cast<OGLRenderEngine&>(Context::Instance().RenderFactoryInstance().RenderEngineInstance());
 		switch (tma)
 		{
 		case TMA_Read_Only:
@@ -272,7 +282,7 @@ namespace KlayGE
 				re.BindBuffer(GL_PIXEL_PACK_BUFFER, pbo_);
 
 				re.BindTexture(0, target_type_, texture_);
-				glGetTexImage(target_type_, level, gl_format, gl_type, nullptr);
+				glGetTexImage(target_type_, level, gl_format, gl_type, reinterpret_cast<GLvoid*>(subres_offset));
 
 				p = static_cast<uint8_t*>(glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY));
 			}
@@ -287,12 +297,10 @@ namespace KlayGE
 			break;
 
 		default:
-			BOOST_ASSERT(false);
-			p = nullptr;
-			break;
+			KFL_UNREACHABLE("Invalid texture map access mode");
 		}
 
-		p += array_index * mipmap_start_offset_.back() + mipmap_start_offset_[level];
+		p += subres_offset;
 		data = p + ((z_offset * d + y_offset) * w + x_offset) * texel_size;
 	}
 
@@ -305,7 +313,7 @@ namespace KlayGE
 		uint32_t const h = this->Height(level);
 		uint32_t const d = this->Depth(level);
 
-		OGLRenderEngine& re = *checked_cast<OGLRenderEngine*>(&Context::Instance().RenderFactoryInstance().RenderEngineInstance());
+		auto& re = checked_cast<OGLRenderEngine&>(Context::Instance().RenderFactoryInstance().RenderEngineInstance());
 		switch (last_tma_)
 		{
 		case TMA_Read_Only:
@@ -333,7 +341,7 @@ namespace KlayGE
 				if (IsCompressedFormat(format_))
 				{
 					uint32_t const block_size = NumFormatBytes(format_) * 4;
-					GLsizei const image_size = ((w + 3) / 4) * ((h + 3) / 4) * block_size;
+					GLsizei const image_size = ((w + 3) / 4) * ((h + 3) / 4) * d * block_size;
 
 					glCompressedTexSubImage3D(target_type_, level, 0, 0, 0,
 							w, h, d, gl_format, image_size,
@@ -347,44 +355,128 @@ namespace KlayGE
 			break;
 
 		default:
-			BOOST_ASSERT(false);
-			break;
+			KFL_UNREACHABLE("Invalid texture map access mode");
 		}
 	}
 
-	void OGLTexture3D::CreateHWResource(ElementInitData const * init_data)
+	void OGLTexture3D::CreateHWResource(ArrayRef<ElementInitData> init_data, float4 const * clear_value_hint)
 	{
+		KFL_UNUSED(clear_value_hint);
+
 		GLint glinternalFormat;
 		GLenum glformat;
 		GLenum gltype;
 		OGLMapping::MappingFormat(glinternalFormat, glformat, gltype, format_);
 
-		glBindTexture(target_type_, texture_);
-		glTexParameteri(target_type_, GL_TEXTURE_MAX_LEVEL, num_mip_maps_ - 1);
-
-		OGLRenderEngine& re = *checked_cast<OGLRenderEngine*>(&Context::Instance().RenderFactoryInstance().RenderEngineInstance());
-		re.BindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo_);
-		glBufferData(GL_PIXEL_UNPACK_BUFFER, mipmap_start_offset_.back() * array_size_, nullptr, GL_STREAM_COPY);
-		re.BindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
-
-		for (uint32_t level = 0; level < num_mip_maps_; ++ level)
+		uint32_t const pbo_size = mipmap_start_offset_.back() * array_size_;
+		if (glloader_GL_VERSION_4_5() || glloader_GL_ARB_direct_state_access())
 		{
-			uint32_t const w = this->Width(level);
-			uint32_t const h = this->Height(level);
-			uint32_t const d = this->Depth(level);
+			glTextureParameteri(texture_, GL_TEXTURE_MAX_LEVEL, num_mip_maps_ - 1);
 
-			if (IsCompressedFormat(format_))
+			glNamedBufferStorage(pbo_, pbo_size, nullptr, GL_MAP_READ_BIT | GL_MAP_WRITE_BIT | GL_DYNAMIC_STORAGE_BIT);
+
+			uint32_t const w0 = this->Width(0);
+			uint32_t const h0 = this->Height(0);
+			uint32_t const d0 = this->Depth(0);
+
+			glTextureStorage3D(texture_, num_mip_maps_, glinternalFormat, w0, h0, d0);
+
+			if (!init_data.empty())
 			{
-				uint32_t const block_size = NumFormatBytes(format_) * 4;
-				GLsizei const image_size = ((w + 3) / 4) * ((h + 3) / 4) * d * block_size;
+				for (uint32_t level = 0; level < num_mip_maps_; ++ level)
+				{
+					uint32_t const w = this->Width(level);
+					uint32_t const h = this->Height(level);
+					uint32_t const d = this->Depth(level);
+					GLvoid const * data = init_data[level].data;
 
-				glCompressedTexImage3D(target_type_, level, glinternalFormat,
-					w, h, d, 0, image_size, (nullptr == init_data) ? nullptr : init_data[level].data);
+					if (IsCompressedFormat(format_))
+					{
+						uint32_t const block_size = NumFormatBytes(format_) * 4;
+						GLsizei const image_size = ((w + 3) / 4) * ((h + 3) / 4) * d * block_size;
+
+						glCompressedTextureSubImage3D(texture_, level, 0, 0, 0,
+								w, h, d, glformat, image_size, data);
+					}
+					else
+					{
+						glTextureSubImage3D(texture_, level, 0, 0, 0, w, h, d, glformat, gltype, data);
+					}
+				}
+			}
+		}
+		else
+		{
+			auto& re = checked_cast<OGLRenderEngine&>(Context::Instance().RenderFactoryInstance().RenderEngineInstance());
+
+			re.BindTexture(0, target_type_, texture_);
+			glTexParameteri(target_type_, GL_TEXTURE_MAX_LEVEL, num_mip_maps_ - 1);
+
+			re.BindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo_);
+			if (glloader_GL_VERSION_4_4() || glloader_GL_ARB_buffer_storage())
+			{
+				glBufferStorage(GL_PIXEL_UNPACK_BUFFER, pbo_size, nullptr, GL_DYNAMIC_STORAGE_BIT);
 			}
 			else
 			{
-				glTexImage3D(target_type_, level, glinternalFormat, w, h, d, 0, glformat, gltype,
-					(nullptr == init_data) ? nullptr : init_data[level].data);
+				glBufferData(GL_PIXEL_UNPACK_BUFFER, pbo_size, nullptr, GL_STREAM_COPY);
+			}
+			re.BindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+
+			if (glloader_GL_VERSION_4_2() || glloader_GL_ARB_texture_storage())
+			{
+				uint32_t const w0 = this->Width(0);
+				uint32_t const h0 = this->Height(0);
+				uint32_t const d0 = this->Depth(0);
+
+				glTexStorage3D(target_type_, num_mip_maps_, glinternalFormat, w0, h0, d0);
+
+				if (!init_data.empty())
+				{
+					for (uint32_t level = 0; level < num_mip_maps_; ++ level)
+					{
+						uint32_t const w = this->Width(level);
+						uint32_t const h = this->Height(level);
+						uint32_t const d = this->Depth(level);
+						GLvoid const * data = init_data[level].data;
+
+						if (IsCompressedFormat(format_))
+						{
+							uint32_t const block_size = NumFormatBytes(format_) * 4;
+							GLsizei const image_size = ((w + 3) / 4) * ((h + 3) / 4) * d * block_size;
+
+							glCompressedTexSubImage3D(target_type_, level, 0, 0, 0,
+									w, h, d, glformat, image_size, data);
+						}
+						else
+						{
+							glTexSubImage3D(target_type_, level, 0, 0, 0, w, h, d, glformat, gltype, data);
+						}
+					}
+				}
+			}
+			else
+			{
+				for (uint32_t level = 0; level < num_mip_maps_; ++ level)
+				{
+					uint32_t const w = this->Width(level);
+					uint32_t const h = this->Height(level);
+					uint32_t const d = this->Depth(level);
+
+					if (IsCompressedFormat(format_))
+					{
+						uint32_t const block_size = NumFormatBytes(format_) * 4;
+						GLsizei const image_size = ((w + 3) / 4) * ((h + 3) / 4) * d * block_size;
+
+						glCompressedTexImage3D(target_type_, level, glinternalFormat,
+							w, h, d, 0, image_size, init_data.empty() ? nullptr : init_data[level].data);
+					}
+					else
+					{
+						glTexImage3D(target_type_, level, glinternalFormat, w, h, d, 0, glformat, gltype,
+							init_data.empty() ? nullptr : init_data[level].data);
+					}
+				}
 			}
 		}
 
@@ -399,7 +491,7 @@ namespace KlayGE
 		BOOST_ASSERT(0 == array_index);
 		KFL_UNUSED(array_index);
 
-		OGLRenderEngine& re = *checked_cast<OGLRenderEngine*>(&Context::Instance().RenderFactoryInstance().RenderEngineInstance());
+		auto& re = checked_cast<OGLRenderEngine&>(Context::Instance().RenderFactoryInstance().RenderEngineInstance());
 
 		GLint gl_internalFormat;
 		GLenum gl_format;

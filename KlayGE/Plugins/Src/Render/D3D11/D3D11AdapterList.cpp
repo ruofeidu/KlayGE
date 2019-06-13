@@ -12,12 +12,14 @@
 
 #include <KlayGE/KlayGE.hpp>
 #include <KFL/Util.hpp>
-#include <KFL/ThrowErr.hpp>
+#include <KFL/ErrorHandling.hpp>
 #include <KFL/COMPtr.hpp>
 
 #include <vector>
+#include <system_error>
 #include <boost/assert.hpp>
 
+#include <KlayGE/D3D11/D3D11Adapter.hpp>
 #include <KlayGE/D3D11/D3D11AdapterList.hpp>
 
 namespace KlayGE
@@ -44,11 +46,11 @@ namespace KlayGE
 
 	// 获取显卡
 	/////////////////////////////////////////////////////////////////////////////////
-	D3D11AdapterPtr const & D3D11AdapterList::Adapter(size_t index) const
+	D3D11Adapter& D3D11AdapterList::Adapter(size_t index) const
 	{
 		BOOST_ASSERT(index < adapters_.size());
 
-		return adapters_[index];
+		return *adapters_[index];
 	}
 
 	// 获取当前显卡索引
@@ -76,9 +78,9 @@ namespace KlayGE
 		{
 			if (dxgi_adapter != nullptr)
 			{
-				D3D11AdapterPtr adapter = MakeSharedPtr<D3D11Adapter>(adapter_no, MakeCOMPtr(dxgi_adapter));
+				auto adapter = MakeUniquePtr<D3D11Adapter>(adapter_no, MakeCOMPtr(dxgi_adapter));
 				adapter->Enumerate();
-				adapters_.push_back(adapter);
+				adapters_.push_back(std::move(adapter));
 			}
 
 			++ adapter_no;
@@ -87,7 +89,38 @@ namespace KlayGE
 		// 如果没有找到兼容的设备则抛出错误
 		if (adapters_.empty())
 		{
-			THR(errc::function_not_supported);
+			TERRC(std::errc::function_not_supported);
+		}
+	}
+
+	void D3D11AdapterList::Enumerate(IDXGIFactory6Ptr const & gi_factory)
+	{
+		UINT adapter_no = 0;
+		IDXGIAdapter1* dxgi_adapter = nullptr;
+		while (SUCCEEDED(gi_factory->EnumAdapterByGpuPreference(adapter_no, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+			IID_IDXGIAdapter1, reinterpret_cast<void**>(&dxgi_adapter))))
+		{
+			if (dxgi_adapter != nullptr)
+			{
+				auto adapter = MakeUniquePtr<D3D11Adapter>(adapter_no, MakeCOMPtr(dxgi_adapter));
+				adapter->Enumerate();
+				adapters_.push_back(std::move(adapter));
+			}
+
+			++ adapter_no;
+		}
+
+		if (adapters_.empty())
+		{
+			IDXGIFactory1* gif1;
+			gi_factory->QueryInterface(IID_IDXGIFactory1, reinterpret_cast<void**>(&gif1));
+			IDXGIFactory1Ptr gi_factory1 = MakeCOMPtr<IDXGIFactory1>(gif1);
+			this->Enumerate(gi_factory1);
+		}
+
+		if (adapters_.empty())
+		{
+			TERRC(std::errc::function_not_supported);
 		}
 	}
 }

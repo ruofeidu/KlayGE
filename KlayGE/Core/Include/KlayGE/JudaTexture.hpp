@@ -18,6 +18,7 @@
 #include <KlayGE/PreDeclare.hpp>
 #include <KlayGE/Texture.hpp>
 #include <KlayGE/RenderStateObject.hpp>
+#include <KlayGE/TexCompressionBC.hpp>
 
 #include <vector>
 #include <deque>
@@ -30,7 +31,7 @@ namespace KlayGE
 	KLAYGE_CORE_API JudaTexturePtr LoadJudaTexture(std::string const & file_name);
 	KLAYGE_CORE_API void SaveJudaTexture(JudaTexturePtr const & juda_tex, std::string const & file_name);
 
-	class KLAYGE_CORE_API JudaTexture
+	class KLAYGE_CORE_API JudaTexture : boost::noncopyable
 	{
 		friend KLAYGE_CORE_API JudaTexturePtr LoadJudaTexture(std::string const & file_name);
 		friend KLAYGE_CORE_API void SaveJudaTexture(JudaTexturePtr const & juda_tex, std::string const & file_name);
@@ -171,11 +172,11 @@ namespace KlayGE
 		LZMACodec lzma_dec_;
 		struct DecodedBlockInfo
 		{
-			std::shared_ptr<std::vector<uint8_t>> data;
+			std::unique_ptr<uint8_t[]> data;
 			uint64_t tick;
 
-			DecodedBlockInfo(std::shared_ptr<std::vector<uint8_t>> const & d, uint64_t t)
-				: data(d), tick(t)
+			DecodedBlockInfo(std::unique_ptr<uint8_t[]>&& d, uint64_t t)
+				: data(std::move(d)), tick(t)
 			{
 			}
 		};
@@ -189,7 +190,7 @@ namespace KlayGE
 		TexturePtr tex_indirect_;
 		uint32_t cache_tile_border_size_;
 		uint32_t cache_tile_size_;
-		TexCompressionPtr tex_codec_;
+		std::unique_ptr<TexCompression> tex_codec_;
 
 		struct TileInfo
 		{

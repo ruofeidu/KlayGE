@@ -35,9 +35,9 @@
 //////////////////////////////////////////////////////////////////////////////////
 
 #include <KlayGE/KlayGE.hpp>
+#include <KFL/ErrorHandling.hpp>
 #include <KlayGE/App3D.hpp>
 #include <KlayGE/Window.hpp>
-#include <KFL/ThrowErr.hpp>
 #include <KFL/Math.hpp>
 #include <KlayGE/Viewport.hpp>
 #include <KlayGE/GraphicsBuffer.hpp>
@@ -56,8 +56,9 @@
 
 #include <algorithm>
 #include <cstring>
+#include <string>
+
 #include <boost/assert.hpp>
-#include <boost/lexical_cast.hpp>
 
 #include <KlayGE/OpenGL/OGLMapping.hpp>
 #include <KlayGE/OpenGL/OGLRenderWindow.hpp>
@@ -98,8 +99,7 @@ namespace
 			break;
 
 		default:
-			BOOST_ASSERT(false);
-			ret = nullptr;
+			KFL_UNREACHABLE("Invalid debug source");
 		}
 
 		return ret;
@@ -139,8 +139,7 @@ namespace
 			break;
 
 		default:
-			BOOST_ASSERT(false);
-			ret = nullptr;
+			KFL_UNREACHABLE("Invalid debug type");
 		}
 
 		return ret;
@@ -165,8 +164,7 @@ namespace
 			break;
 
 		default:
-			BOOST_ASSERT(false);
-			ret = nullptr;
+			KFL_UNREACHABLE("Invalid debug severity");
 		}
 
 		return ret;
@@ -178,19 +176,12 @@ namespace
 		KFL_UNUSED(length);
 		KFL_UNUSED(user_param);
 
-		std::string dbg = std::string("OpenGL debug output: source: ") + DebugSourceString(source) + "; "
-			+ "type: " + DebugTypeString(type) + "; "
-			+ "id: " + boost::lexical_cast<std::string>(id) + "; "
-			+ "severity: " + DebugSeverityString(severity) + "; "
-			+ "message: " + message;
-		if (GL_DEBUG_TYPE_ERROR == type)
-		{
-			KlayGE::LogError(dbg.c_str());
-		}
-		else
-		{
-			KlayGE::LogInfo(dbg.c_str());
-		}
+		auto& os = (GL_DEBUG_TYPE_ERROR == type) ? KlayGE::LogError() : KlayGE::LogInfo();
+		os << "OpenGL debug output: source: " << DebugSourceString(source) << "; "
+			<< "type: " << DebugTypeString(type) << "; "
+			<< "id: " << id << "; "
+			<< "severity: " << DebugSeverityString(severity) << "; "
+			<< "message: " << message << std::endl;
 	}
 #endif
 }
@@ -214,9 +205,16 @@ namespace KlayGE
 		mod_opengl32_ = ::LoadLibraryEx(TEXT("opengl32.dll"), nullptr, 0);
 		KLAYGE_ASSUME(mod_opengl32_ != nullptr);
 
-		DynamicWglCreateContext_ = (wglCreateContextFUNC)::GetProcAddress(mod_opengl32_, "wglCreateContext");
-		DynamicWglDeleteContext_ = (wglDeleteContextFUNC)::GetProcAddress(mod_opengl32_, "wglDeleteContext");
-		DynamicWglMakeCurrent_ = (wglMakeCurrentFUNC)::GetProcAddress(mod_opengl32_, "wglMakeCurrent");
+#if defined(KLAYGE_COMPILER_GCC) && (KLAYGE_COMPILER_VERSION >= 80)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-function-type"
+#endif
+		DynamicWglCreateContext_ = reinterpret_cast<wglCreateContextFUNC>(::GetProcAddress(mod_opengl32_, "wglCreateContext"));
+		DynamicWglDeleteContext_ = reinterpret_cast<wglDeleteContextFUNC>(::GetProcAddress(mod_opengl32_, "wglDeleteContext"));
+		DynamicWglMakeCurrent_ = reinterpret_cast<wglMakeCurrentFUNC>(::GetProcAddress(mod_opengl32_, "wglMakeCurrent"));
+#if defined(KLAYGE_COMPILER_GCC) && (KLAYGE_COMPILER_VERSION >= 80)
+#pragma GCC diagnostic pop
+#endif
 #endif
 	}
 
@@ -240,8 +238,6 @@ namespace KlayGE
 	void OGLRenderEngine::DoCreateRenderWindow(std::string const & name,
 		RenderSettings const & settings)
 	{
-		motion_frames_ = settings.motion_frames;
-
 		FrameBufferPtr win = MakeSharedPtr<OGLRenderWindow>(name, settings);
 
 		if (glloader_GL_VERSION_4_5())
@@ -260,25 +256,9 @@ namespace KlayGE
 		{
 			native_shader_platform_name_ = "gl_4_2";
 		}
-		else if (glloader_GL_VERSION_4_1())
+		else //if (glloader_GL_VERSION_4_1())
 		{
 			native_shader_platform_name_ = "gl_4_1";
-		}
-		else if (glloader_GL_VERSION_4_0())
-		{
-			native_shader_platform_name_ = "gl_4_0";
-		}
-		else if (glloader_GL_VERSION_3_3())
-		{
-			native_shader_platform_name_ = "gl_3_3";
-		}
-		else if (glloader_GL_VERSION_3_2())
-		{
-			native_shader_platform_name_ = "gl_3_2";
-		}
-		else //if (glloader_GL_VERSION_3_1())
-		{
-			native_shader_platform_name_ = "gl_3_1";
 		}
 
 		this->FillRenderDeviceCaps();
@@ -309,24 +289,29 @@ namespace KlayGE
 		}
 #endif
 
-		win->Attach(FrameBuffer::ATT_Color0,
-			MakeSharedPtr<OGLScreenColorRenderView>(win->Width(), win->Height(), settings.color_fmt));
+		win->Attach(FrameBuffer::Attachment::Color0,
+			MakeSharedPtr<OGLScreenRenderTargetView>(win->Width(), win->Height(), settings.color_fmt));
 		if (NumDepthBits(settings.depth_stencil_fmt) > 0)
 		{
-			win->Attach(FrameBuffer::ATT_DepthStencil,
-				MakeSharedPtr<OGLScreenDepthStencilRenderView>(win->Width(), win->Height(), settings.depth_stencil_fmt));
+			win->Attach(MakeSharedPtr<OGLScreenDepthStencilView>(win->Width(), win->Height(), settings.depth_stencil_fmt));
 		}
 
 		this->BindFrameBuffer(win);
 
 		glGenFramebuffers(1, &fbo_blit_src_);
 		glGenFramebuffers(1, &fbo_blit_dst_);
+
+		if (glloader_GL_VERSION_4_5() || glloader_GL_ARB_clip_control())
+		{
+			glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);
+			clip_control_ = true;
+		}
 	}
 
 	void OGLRenderEngine::CheckConfig(RenderSettings& settings)
 	{
-		if ((!caps_.texture_format_support(EF_R16F) && !caps_.texture_format_support(EF_ABGR16F))
-			|| (!caps_.texture_format_support(EF_R32F) || !caps_.texture_format_support(EF_ABGR32F)))
+		if ((!caps_.TextureFormatSupport(EF_R16F) && !caps_.TextureFormatSupport(EF_ABGR16F))
+			|| (!caps_.TextureFormatSupport(EF_R32F) || !caps_.TextureFormatSupport(EF_ABGR32F)))
 		{
 			settings.hdr = false;
 		}
@@ -335,13 +320,9 @@ namespace KlayGE
 	void OGLRenderEngine::InitRenderStates()
 	{
 		RenderFactory& rf = Context::Instance().RenderFactoryInstance();
-		cur_rs_obj_ = rf.MakeRasterizerStateObject(RasterizerStateDesc());
-		polygon_mode_override_ = OGLMapping::Mapping(cur_rs_obj_->GetDesc().polygon_mode);
-		cur_dss_obj_ = rf.MakeDepthStencilStateObject(DepthStencilStateDesc());
-		cur_bs_obj_ = rf.MakeBlendStateObject(BlendStateDesc());
-		checked_pointer_cast<OGLRasterizerStateObject>(cur_rs_obj_)->ForceDefaultState();
-		checked_pointer_cast<OGLDepthStencilStateObject>(cur_dss_obj_)->ForceDefaultState();
-		checked_pointer_cast<OGLBlendStateObject>(cur_bs_obj_)->ForceDefaultState();
+		cur_rs_obj_ = rf.MakeRenderStateObject(RasterizerStateDesc(), DepthStencilStateDesc(), BlendStateDesc());
+		polygon_mode_override_ = OGLMapping::Mapping(cur_rs_obj_->GetRasterizerStateDesc().polygon_mode);
+		checked_pointer_cast<OGLRenderStateObject>(cur_rs_obj_)->ForceDefaultState();
 
 		glEnable(GL_POLYGON_OFFSET_FILL);
 		glEnable(GL_POLYGON_OFFSET_POINT);
@@ -352,8 +333,8 @@ namespace KlayGE
 		active_tex_unit_ = GL_TEXTURE0;
 		glActiveTexture(active_tex_unit_);
 
-		binded_targets_.clear();
 		binded_textures_.clear();
+		binded_samplers_.clear();
 		binded_buffers_.clear();
 
 		fb_srgb_cache_ = false;
@@ -376,10 +357,9 @@ namespace KlayGE
 
 	void OGLRenderEngine::BindTextures(GLuint first, GLsizei count, GLuint const * targets, GLuint const * textures, bool force)
 	{
-		if (first + count > binded_targets_.size())
+		if (first + count > binded_textures_.size())
 		{
-			binded_targets_.resize(first + count, 0);
-			binded_textures_.resize(binded_targets_.size(), 0xFFFFFFFF);
+			binded_textures_.resize(first + count, std::make_pair(0, 0xFFFFFFFF));
 		}
 
 		bool dirty = force;
@@ -387,13 +367,13 @@ namespace KlayGE
 		{
 			uint32_t start_dirty = first;
 			uint32_t end_dirty = first + count;
-			while ((start_dirty != end_dirty) && (binded_targets_[start_dirty] == targets[start_dirty])
-				&& (binded_textures_[start_dirty] == textures[start_dirty]))
+			while ((start_dirty != end_dirty) && (binded_textures_[start_dirty].first == targets[start_dirty])
+				&& (binded_textures_[start_dirty].second == textures[start_dirty]))
 			{
 				++ start_dirty;
 			}
-			while ((start_dirty != end_dirty) && (binded_targets_[end_dirty - 1] == targets[end_dirty - 1])
-				&& (binded_textures_[end_dirty - 1] == textures[end_dirty - 1]))
+			while ((start_dirty != end_dirty) && (binded_textures_[end_dirty - 1].first == targets[end_dirty - 1])
+				&& (binded_textures_[end_dirty - 1].second == textures[end_dirty - 1]))
 			{
 				-- end_dirty;
 			}
@@ -418,8 +398,59 @@ namespace KlayGE
 				}
 			}
 
-			memcpy(&binded_targets_[first], &targets[first], count * sizeof(targets[0]));
-			memcpy(&binded_textures_[first], &textures[first], count * sizeof(textures[0]));
+			for (uint32_t i = first; i < first + count; ++ i)
+			{
+				binded_textures_[i] = std::make_pair(targets[i], textures[i]);
+			}
+		}
+	}
+
+	void OGLRenderEngine::BindSampler(GLuint index, GLuint sampler, bool force)
+	{
+		this->BindSamplers(index, 1, &sampler, force);
+	}
+
+	void OGLRenderEngine::BindSamplers(GLuint first, GLsizei count, GLuint const * samplers, bool force)
+	{
+		if (first + count > binded_samplers_.size())
+		{
+			binded_samplers_.resize(first + count, 0xFFFFFFFF);
+		}
+
+		bool dirty = force;
+		if (!dirty)
+		{
+			uint32_t start_dirty = first;
+			uint32_t end_dirty = first + count;
+			while ((start_dirty != end_dirty) && (binded_samplers_[start_dirty] == samplers[start_dirty]))
+			{
+				++ start_dirty;
+			}
+			while ((start_dirty != end_dirty) && (binded_samplers_[end_dirty - 1] == samplers[end_dirty - 1]))
+			{
+				-- end_dirty;
+			}
+
+			first = start_dirty;
+			count = end_dirty - start_dirty;
+			dirty = (count > 0);
+		}
+
+		if (dirty)
+		{
+			if (glloader_GL_VERSION_4_4() || glloader_GL_ARB_multi_bind())
+			{
+				glBindSamplers(first, count, &samplers[first]);
+			}
+			else
+			{
+				for (uint32_t i = first; i < first + count; ++ i)
+				{
+					glBindSampler(i, samplers[i]);
+				}
+			}
+
+			memcpy(&binded_samplers_[first], &samplers[first], count * sizeof(samplers[0]));
 		}
 	}
 
@@ -468,6 +499,44 @@ namespace KlayGE
 
 			memcpy(&binded[first], buffers, count * sizeof(buffers[0]));
 		}
+	}
+
+	void OGLRenderEngine::DeleteTextures(GLsizei n, GLuint const * textures)
+	{
+		for (GLsizei i = 0; i < n; ++ i)
+		{
+			for (auto iter = binded_textures_.begin(); iter != binded_textures_.end();)
+			{
+				if (iter->second == textures[i])
+				{
+					iter = binded_textures_.erase(iter);
+				}
+				else
+				{
+					++ iter;
+				}
+			}
+		}
+		glDeleteTextures(n, textures);
+	}
+
+	void OGLRenderEngine::DeleteSamplers(GLsizei n, GLuint const * samplers)
+	{
+		for (GLsizei i = 0; i < n; ++ i)
+		{
+			for (auto iter = binded_samplers_.begin(); iter != binded_samplers_.end();)
+			{
+				if (*iter == samplers[i])
+				{
+					iter = binded_samplers_.erase(iter);
+				}
+				else
+				{
+					++ iter;
+				}
+			}
+		}
+		glDeleteSamplers(n, samplers);
 	}
 
 	void OGLRenderEngine::DeleteBuffers(GLsizei n, GLuint const * buffers)
@@ -1047,9 +1116,7 @@ namespace KlayGE
 				break;
 
 			default:
-				BOOST_ASSERT(false);
-				so_primitive_mode_ = GL_POINTS;
-				break;
+				KFL_UNREACHABLE("Invalid topoloty type");
 			}
 
 			so_buffs_.resize(so_rl_->NumVertexStreams());
@@ -1072,7 +1139,7 @@ namespace KlayGE
 		BOOST_ASSERT(num_instances != 0);
 
 		OGLShaderObjectPtr cur_shader = checked_pointer_cast<OGLShaderObject>(tech.Pass(0).GetShaderObject(effect));
-		checked_cast<OGLRenderLayout const *>(&rl)->Active(cur_shader);
+		checked_cast<OGLRenderLayout const&>(rl).Active(cur_shader);
 
 		uint32_t const vertex_count = rl.UseIndices() ? rl.NumIndices() : rl.NumVertices();
 		GLenum mode;
@@ -1112,7 +1179,7 @@ namespace KlayGE
 
 		uint32_t const num_passes = tech.NumPasses();
 		GraphicsBufferPtr const & buff_args = rl.GetIndirectArgs();
-		if ((glloader_GL_VERSION_4_0() || glloader_GL_ARB_draw_indirect()) && buff_args)
+		if (buff_args)
 		{
 			this->BindBuffer(GL_DRAW_INDIRECT_BUFFER, checked_pointer_cast<OGLGraphicsBuffer>(buff_args)->GLvbo());
 			GLvoid* args_offset = reinterpret_cast<GLvoid*>(static_cast<GLintptr>(rl.IndirectArgsOffset()));
@@ -1177,7 +1244,7 @@ namespace KlayGE
 
 			num_draws_just_called_ += num_passes;
 		}
-		else if ((glloader_GL_VERSION_3_3() || glloader_GL_ARB_instanced_arrays()) && (rl.NumInstances() > 1))
+		else
 		{
 			if (rl.UseIndices())
 			{
@@ -1240,168 +1307,29 @@ namespace KlayGE
 
 			num_draws_just_called_ += num_passes;
 		}
-		else
-		{
-			for (uint32_t instance = rl.StartInstanceLocation(); instance < rl.StartInstanceLocation() + num_instances; ++ instance)
-			{
-				if (rl.InstanceStream())
-				{
-					GraphicsBuffer& stream = *rl.InstanceStream();
-
-					uint32_t const instance_size = rl.InstanceSize();
-					BOOST_ASSERT(num_instances * instance_size <= stream.Size());
-					GraphicsBuffer::Mapper mapper(stream, BA_Read_Only);
-					uint8_t const * buffer = mapper.Pointer<uint8_t>();
-
-					size_t const inst_format_size = rl.InstanceStreamFormat().size();
-					uint32_t elem_offset = 0;
-					for (size_t i = 0; i < inst_format_size; ++ i)
-					{
-						BOOST_ASSERT(elem_offset < instance_size);
-
-						vertex_element const & vs_elem = rl.InstanceStreamFormat()[i];
-
-						GLint attr = cur_shader->GetAttribLocation(vs_elem.usage, vs_elem.usage_index);
-						if (attr != -1)
-						{
-							void const * addr = &buffer[instance * instance_size + elem_offset];
-							GLfloat const * float_addr = static_cast<GLfloat const *>(addr);
-							GLint const num_components = static_cast<GLint>(NumComponents(vs_elem.format));
-							GLenum type;
-							GLboolean normalized;
-							OGLMapping::MappingVertexFormat(type, normalized, vs_elem.format);
-							normalized = (((VEU_Diffuse == vs_elem.usage) || (VEU_Specular == vs_elem.usage)) && !IsFloatFormat(vs_elem.format)) ? GL_TRUE : normalized;
-
-							switch (num_components)
-							{
-							case 1:
-								BOOST_ASSERT(IsFloatFormat(vs_elem.format));
-								glVertexAttrib1fv(attr, float_addr);
-								break;
-
-							case 2:
-								BOOST_ASSERT(IsFloatFormat(vs_elem.format));
-								glVertexAttrib2fv(attr, float_addr);
-								break;
-
-							case 3:
-								BOOST_ASSERT(IsFloatFormat(vs_elem.format));
-								glVertexAttrib3fv(attr, float_addr);
-								break;
-
-							case 4:
-								if (IsFloatFormat(vs_elem.format))
-								{
-									glVertexAttrib4fv(attr, float_addr);
-								}
-								else
-								{
-									if (normalized)
-									{
-										glVertexAttrib4Nubv(attr, static_cast<GLubyte const *>(addr));
-									}
-									else
-									{
-										glVertexAttrib4ubv(attr, static_cast<GLubyte const *>(addr));
-									}
-								}
-								break;
-
-							default:
-								BOOST_ASSERT(false);
-								break;
-							}
-						}
-
-						elem_offset += vs_elem.element_size();
-					}
-				}
-
-				if (rl.UseIndices())
-				{
-					for (uint32_t i = 0; i < num_passes; ++ i)
-					{
-						auto& pass = tech.Pass(i);
-
-						pass.Bind(effect);
-
-						if (so_rl_)
-						{
-							OGLShaderObjectPtr shader = checked_pointer_cast<OGLShaderObject>(pass.GetShaderObject(effect));
-							for (uint32_t j = 0; j < so_buffs_.size(); ++ j)
-							{
-								glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, j, so_buffs_[j]);
-							}
-
-							glBeginTransformFeedback(so_primitive_mode_);
-						}
-
-						glDrawElements(mode, static_cast<GLsizei>(rl.NumIndices()), index_type, index_offset);
-
-						if (so_rl_)
-						{
-							glEndTransformFeedback();
-						}
-
-						pass.Unbind(effect);
-					}
-				}
-				else
-				{
-					for (uint32_t i = 0; i < num_passes; ++ i)
-					{
-						auto& pass = tech.Pass(i);
-
-						pass.Bind(effect);
-
-						if (so_rl_)
-						{
-							OGLShaderObjectPtr shader = checked_pointer_cast<OGLShaderObject>(pass.GetShaderObject(effect));
-							for (uint32_t j = 0; j < so_buffs_.size(); ++ j)
-							{
-								glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, j, so_buffs_[j]);
-							}
-
-							glBeginTransformFeedback(so_primitive_mode_);
-						}
-
-						glDrawArrays(mode, rl.StartVertexLocation(), static_cast<GLsizei>(rl.NumVertices()));
-
-						if (so_rl_)
-						{
-							glEndTransformFeedback();
-						}
-
-						pass.Unbind(effect);
-					}
-				}
-			}
-
-			num_draws_just_called_ += num_instances * num_passes;
-		}
 	}
 
 	void OGLRenderEngine::DoDispatch(RenderEffect const & effect, RenderTechnique const & tech,
 		uint32_t tgx, uint32_t tgy, uint32_t tgz)
 	{
-		BOOST_ASSERT(false);
-
 		KFL_UNUSED(effect);
 		KFL_UNUSED(tech);
 		KFL_UNUSED(tgx);
 		KFL_UNUSED(tgy);
 		KFL_UNUSED(tgz);
+
+		KFL_UNREACHABLE("Not implemented");
 	}
 
 	void OGLRenderEngine::DoDispatchIndirect(RenderEffect const & effect, RenderTechnique const & tech,
 			GraphicsBufferPtr const & buff_args, uint32_t offset)
 	{
-		BOOST_ASSERT(false);
-
 		KFL_UNUSED(effect);
 		KFL_UNUSED(tech);
 		KFL_UNUSED(buff_args);
 		KFL_UNUSED(offset);
+
+		KFL_UNREACHABLE("Not implemented");
 	}
 
 	void OGLRenderEngine::ForceFlush()
@@ -1422,9 +1350,9 @@ namespace KlayGE
 		glScissor(x, y, width, height);
 	}
 
-	void OGLRenderEngine::GetCustomAttrib(std::string const & name, void* value)
+	void OGLRenderEngine::GetCustomAttrib(std::string_view name, void* value) const
 	{
-		size_t const name_hash = RT_HASH(name.c_str());
+		size_t const name_hash = HashRange(name.begin(), name.end());
 		if (CT_HASH("VENDOR") == name_hash)
 		{
 			char const * str = reinterpret_cast<char const *>(glGetString(GL_VENDOR));
@@ -1479,7 +1407,7 @@ namespace KlayGE
 		}
 		else if (0 == name.find("FEATURE_NAME_"))
 		{
-			int const n = boost::lexical_cast<int>(name.substr(13));
+			int const n = std::stoi(std::string(name.substr(13)));
 			*static_cast<std::string*>(value) = glloader_get_feature_name(n);
 		}
 	}
@@ -1531,25 +1459,10 @@ namespace KlayGE
 
 	void OGLRenderEngine::AdjustProjectionMatrix(float4x4& proj_mat)
 	{
-		proj_mat *= MathLib::scaling(1.0f, 1.0f, 2.0f) * MathLib::translation(0.0f, 0.0f, -1.0f);
-	}
-
-	bool OGLRenderEngine::VertexFormatSupport(ElementFormat elem_fmt)
-	{
-		auto iter = std::lower_bound(vertex_format_.begin(), vertex_format_.end(), elem_fmt);
-		return (iter != vertex_format_.end()) && (*iter == elem_fmt);
-	}
-
-	bool OGLRenderEngine::TextureFormatSupport(ElementFormat elem_fmt)
-	{
-		auto iter = std::lower_bound(texture_format_.begin(), texture_format_.end(), elem_fmt);
-		return (iter != texture_format_.end()) && (*iter == elem_fmt);
-	}
-
-	bool OGLRenderEngine::RenderTargetFormatSupport(ElementFormat elem_fmt, uint32_t sample_count, uint32_t /*sample_quality*/)
-	{
-		auto iter = std::lower_bound(rendertarget_format_.begin(), rendertarget_format_.end(), elem_fmt);
-		return (iter != rendertarget_format_.end()) && (*iter == elem_fmt) && (sample_count <= max_samples_);
+		if (!clip_control_)
+		{
+			proj_mat *= MathLib::scaling(1.0f, 1.0f, 2.0f) * MathLib::translation(0.0f, 0.0f, -1.0f);
+		}
 	}
 
 	// 填充设备能力
@@ -1561,28 +1474,7 @@ namespace KlayGE
 		glGetIntegerv(GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS, &temp);
 		caps_.max_vertex_texture_units = static_cast<uint8_t>(temp);
 
-		if (glloader_GL_VERSION_4_0() || glloader_GL_ARB_gpu_shader5())
-		{
-			caps_.max_shader_model = ShaderModel(5, 0);
-		}
-		else
-		{
-			if (caps_.max_vertex_texture_units != 0)
-			{
-				if (glloader_GL_EXT_gpu_shader4())
-				{
-					caps_.max_shader_model = ShaderModel(4, 0);
-				}
-				else
-				{
-					caps_.max_shader_model = ShaderModel(3, 0);
-				}
-			}
-			else
-			{
-				caps_.max_shader_model = ShaderModel(2, 0);
-			}
-		}
+		caps_.max_shader_model = ShaderModel(5, 0);
 
 		glGetIntegerv(GL_MAX_TEXTURE_SIZE, &temp);
 		caps_.max_texture_height = caps_.max_texture_width = temp;
@@ -1598,19 +1490,12 @@ namespace KlayGE
 		glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &temp);
 		caps_.max_pixel_texture_units = static_cast<uint8_t>(temp);
 
-		if (glloader_GL_VERSION_3_2() || glloader_GL_ARB_geometry_shader4() || glloader_GL_EXT_geometry_shader4())
-		{
-			glGetIntegerv(GL_MAX_GEOMETRY_TEXTURE_IMAGE_UNITS, &temp);
-			caps_.max_geometry_texture_units = static_cast<uint8_t>(temp);
-		}
-		else
-		{
-			caps_.max_geometry_texture_units = 0;
-		}
+		glGetIntegerv(GL_MAX_GEOMETRY_TEXTURE_IMAGE_UNITS, &temp);
+		caps_.max_geometry_texture_units = static_cast<uint8_t>(temp);
 
-		if (glloader_GL_EXT_texture_filter_anisotropic())
+		if (glloader_GL_VERSION_4_6() || glloader_GL_ARB_texture_filter_anisotropic() || glloader_GL_EXT_texture_filter_anisotropic())
 		{
-			glGetIntegerv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &temp);
+			glGetIntegerv(GL_MAX_TEXTURE_MAX_ANISOTROPY, &temp);
 			caps_.max_texture_anisotropy = static_cast<uint8_t>(temp);
 		}
 		else
@@ -1635,31 +1520,14 @@ namespace KlayGE
 		caps_.primitive_restart_support = true;
 		caps_.multithread_rendering_support = false;
 		caps_.multithread_res_creating_support = false;
+		caps_.arbitrary_multithread_rendering_support = false;
 		caps_.mrt_independent_bit_depths_support = false;
-		if (caps_.max_shader_model < ShaderModel(3, 0))
-		{
-			caps_.standard_derivatives_support = false;
-			caps_.shader_texture_lod_support = false;
-		}
-		else
-		{
-			caps_.standard_derivatives_support = true;
-			caps_.shader_texture_lod_support = true;
-		}
 		caps_.logic_op_support = true;
 		caps_.independent_blend_support = true;
-		if (glloader_GL_VERSION_4_0() || glloader_GL_ARB_draw_indirect())
-		{
-			caps_.draw_indirect_support = true;
-		}
-		else
-		{
-			caps_.draw_indirect_support = false;
-		}
+		caps_.draw_indirect_support = true;
 		caps_.no_overwrite_support = false;
 		caps_.full_npot_texture_support = true;
-		if ((caps_.max_texture_array_length > 1)
-			&& (glloader_GL_VERSION_3_2() || glloader_GL_ARB_geometry_shader4() || glloader_GL_EXT_geometry_shader4()))
+		if (caps_.max_texture_array_length > 1)
 		{
 			caps_.render_to_texture_array_support = true;
 		}
@@ -1667,30 +1535,18 @@ namespace KlayGE
 		{
 			caps_.render_to_texture_array_support = false;
 		}
+		caps_.explicit_multi_sample_support = false;	// TODO
 		caps_.load_from_buffer_support = true;
+		caps_.uavs_at_every_stage_support = false;	// TODO
+		caps_.rovs_support = false;	// TODO
+		caps_.flexible_srvs_support = false; // TODO
 
-		if (glloader_GL_VERSION_3_2() || glloader_GL_ARB_geometry_shader4() || glloader_GL_EXT_geometry_shader4())
-		{
-			caps_.gs_support = true;
-		}
-		else
-		{
-			caps_.gs_support = false;
-		}
-			
-		caps_.cs_support = false;
-		if (glloader_GL_VERSION_4_0() || glloader_GL_ARB_tessellation_shader())
-		{
-			caps_.hs_support = true;
-			caps_.ds_support = true;
-			caps_.tess_method = TM_Hardware;
-		}
-		else
-		{
-			caps_.hs_support = false;
-			caps_.ds_support = false;
-			caps_.tess_method = TM_No;
-		}
+		caps_.gs_support = true;
+
+		caps_.cs_support = false;	// TODO
+		caps_.hs_support = true;
+		caps_.ds_support = true;
+		caps_.tess_method = TM_Hardware;
 
 		std::string vendor(reinterpret_cast<char const *>(glGetString(GL_VENDOR)));
 		if (vendor.find("NVIDIA", 0) != std::string::npos)
@@ -1718,226 +1574,247 @@ namespace KlayGE
 			hack_for_intel_ = false;
 		}
 
-		vertex_format_.push_back(EF_A8);
-		vertex_format_.push_back(EF_R8);
-		vertex_format_.push_back(EF_GR8);
-		vertex_format_.push_back(EF_BGR8);
-		vertex_format_.push_back(EF_ARGB8);
-		vertex_format_.push_back(EF_ABGR8);
-		vertex_format_.push_back(EF_R8UI);
-		vertex_format_.push_back(EF_GR8UI);
-		vertex_format_.push_back(EF_BGR8UI);
-		vertex_format_.push_back(EF_ABGR8UI);
-		vertex_format_.push_back(EF_SIGNED_R8);
-		vertex_format_.push_back(EF_SIGNED_GR8);
-		vertex_format_.push_back(EF_SIGNED_BGR8);
-		vertex_format_.push_back(EF_SIGNED_ABGR8);
-		vertex_format_.push_back(EF_R8I);
-		vertex_format_.push_back(EF_GR8I);
-		vertex_format_.push_back(EF_BGR8I);
-		vertex_format_.push_back(EF_ABGR8I);
-		vertex_format_.push_back(EF_A2BGR10);
-		vertex_format_.push_back(EF_R16);
-		vertex_format_.push_back(EF_GR16);
-		vertex_format_.push_back(EF_BGR16);
-		vertex_format_.push_back(EF_ABGR16);
-		vertex_format_.push_back(EF_R16UI);
-		vertex_format_.push_back(EF_GR16UI);
-		vertex_format_.push_back(EF_BGR16UI);
-		vertex_format_.push_back(EF_ABGR16UI);
-		vertex_format_.push_back(EF_SIGNED_R16);
-		vertex_format_.push_back(EF_SIGNED_GR16);
-		vertex_format_.push_back(EF_SIGNED_BGR16);
-		vertex_format_.push_back(EF_SIGNED_ABGR16);
-		vertex_format_.push_back(EF_R16I);
-		vertex_format_.push_back(EF_GR16I);
-		vertex_format_.push_back(EF_BGR16I);
-		vertex_format_.push_back(EF_ABGR16I);
-		vertex_format_.push_back(EF_R32UI);
-		vertex_format_.push_back(EF_GR32UI);
-		vertex_format_.push_back(EF_BGR32UI);
-		vertex_format_.push_back(EF_ABGR32UI);
-		vertex_format_.push_back(EF_R32I);
-		vertex_format_.push_back(EF_GR32I);
-		vertex_format_.push_back(EF_BGR32I);
-		vertex_format_.push_back(EF_ABGR32I);
-		vertex_format_.push_back(EF_R32F);
-		vertex_format_.push_back(EF_GR32F);
-		vertex_format_.push_back(EF_BGR32F);
-		vertex_format_.push_back(EF_ABGR32F);
-		if (glloader_GL_VERSION_3_3() || glloader_GL_ARB_vertex_type_2_10_10_10_rev())
 		{
-			vertex_format_.push_back(EF_SIGNED_A2BGR10);
-		}
-		vertex_format_.push_back(EF_R16F);
-		vertex_format_.push_back(EF_GR16F);
-		vertex_format_.push_back(EF_BGR16F);
-		vertex_format_.push_back(EF_ABGR16F);
-		if (glloader_GL_VERSION_4_4() || glloader_GL_ARB_vertex_type_10f_11f_11f_rev())
-		{
-			vertex_format_.push_back(EF_B10G11R11F);
-		}
-		
-		texture_format_.push_back(EF_A8);
-		texture_format_.push_back(EF_ARGB4);
-		texture_format_.push_back(EF_R8);
-		texture_format_.push_back(EF_SIGNED_R8);
-		texture_format_.push_back(EF_GR8);
-		texture_format_.push_back(EF_SIGNED_GR8);
-		texture_format_.push_back(EF_GR16);
-		texture_format_.push_back(EF_SIGNED_GR16);
-		texture_format_.push_back(EF_BGR8);
-		texture_format_.push_back(EF_SIGNED_BGR8);
-		texture_format_.push_back(EF_SIGNED_ABGR8);
-		texture_format_.push_back(EF_ARGB8);
-		texture_format_.push_back(EF_ABGR8);
-		texture_format_.push_back(EF_A2BGR10);
-		texture_format_.push_back(EF_SIGNED_A2BGR10);
-		texture_format_.push_back(EF_R16);
-		texture_format_.push_back(EF_SIGNED_R16);
-		texture_format_.push_back(EF_R8UI);
-		texture_format_.push_back(EF_R8I);
-		texture_format_.push_back(EF_GR8UI);
-		texture_format_.push_back(EF_GR8I);
-		texture_format_.push_back(EF_BGR8UI);
-		texture_format_.push_back(EF_BGR8I);
-		texture_format_.push_back(EF_ABGR8UI);
-		texture_format_.push_back(EF_ABGR8I);
-		texture_format_.push_back(EF_R16UI);
-		texture_format_.push_back(EF_R16I);
-		texture_format_.push_back(EF_GR16UI);
-		texture_format_.push_back(EF_GR16I);
-		texture_format_.push_back(EF_BGR16UI);
-		texture_format_.push_back(EF_BGR16I);
-		texture_format_.push_back(EF_ABGR16UI);
-		texture_format_.push_back(EF_ABGR16I);
-		texture_format_.push_back(EF_R32UI);
-		texture_format_.push_back(EF_R32I);
-		texture_format_.push_back(EF_GR32UI);
-		texture_format_.push_back(EF_GR32I);
-		texture_format_.push_back(EF_BGR32UI);
-		texture_format_.push_back(EF_BGR32I);
-		texture_format_.push_back(EF_ABGR32UI);
-		texture_format_.push_back(EF_ABGR32I);
-		texture_format_.push_back(EF_BGR16);
-		texture_format_.push_back(EF_SIGNED_BGR16);
-		texture_format_.push_back(EF_ABGR16);
-		texture_format_.push_back(EF_SIGNED_ABGR16);
-		texture_format_.push_back(EF_R16F);
-		texture_format_.push_back(EF_GR16F);
-		texture_format_.push_back(EF_B10G11R11F);
-		texture_format_.push_back(EF_BGR16F);
-		texture_format_.push_back(EF_ABGR16F);
-		texture_format_.push_back(EF_R32F);
-		texture_format_.push_back(EF_GR32F);
-		texture_format_.push_back(EF_BGR32F);
-		texture_format_.push_back(EF_ABGR32F);
-		if (glloader_GL_EXT_texture_compression_s3tc())
-		{
-			texture_format_.push_back(EF_BC1);
-			texture_format_.push_back(EF_BC2);
-			texture_format_.push_back(EF_BC3);
-		}
-		texture_format_.push_back(EF_BC4);
-		texture_format_.push_back(EF_BC5);
-		texture_format_.push_back(EF_SIGNED_BC4);
-		texture_format_.push_back(EF_SIGNED_BC5);
-		if (glloader_GL_ARB_texture_compression_bptc())
-		{
-			texture_format_.push_back(EF_BC6);
-			texture_format_.push_back(EF_BC7);
-		}
-		texture_format_.push_back(EF_D16);
-		texture_format_.push_back(EF_D24S8);
-		texture_format_.push_back(EF_D32F);
-		texture_format_.push_back(EF_ARGB8_SRGB);
-		texture_format_.push_back(EF_ABGR8_SRGB);
-		if (glloader_GL_EXT_texture_compression_s3tc())
-		{
-			texture_format_.push_back(EF_BC1_SRGB);
-			texture_format_.push_back(EF_BC2_SRGB);
-			texture_format_.push_back(EF_BC3_SRGB);
-		}
-		texture_format_.push_back(EF_BC4_SRGB);
-		texture_format_.push_back(EF_BC5_SRGB);
-		if (glloader_GL_VERSION_4_3() || glloader_GL_ARB_ES3_compatibility())
-		{
-			texture_format_.push_back(EF_ETC1);
-			texture_format_.push_back(EF_ETC2_R11);
-			texture_format_.push_back(EF_SIGNED_ETC2_R11);
-			texture_format_.push_back(EF_ETC2_GR11);
-			texture_format_.push_back(EF_SIGNED_ETC2_GR11);
-			texture_format_.push_back(EF_ETC2_BGR8);
-			texture_format_.push_back(EF_ETC2_BGR8_SRGB);
-			texture_format_.push_back(EF_ETC2_A1BGR8);
-			texture_format_.push_back(EF_ETC2_A1BGR8_SRGB);
-			texture_format_.push_back(EF_ETC2_ABGR8);
-			texture_format_.push_back(EF_ETC2_ABGR8_SRGB);
-		}
+			std::vector<ElementFormat> vertex_formats =
+			{
+				EF_A8,
+				EF_R8,
+				EF_GR8,
+				EF_BGR8,
+				EF_ARGB8,
+				EF_ABGR8,
+				EF_R8UI,
+				EF_GR8UI,
+				EF_BGR8UI,
+				EF_ABGR8UI,
+				EF_SIGNED_R8,
+				EF_SIGNED_GR8,
+				EF_SIGNED_BGR8,
+				EF_SIGNED_ABGR8,
+				EF_R8I,
+				EF_GR8I,
+				EF_BGR8I,
+				EF_ABGR8I,
+				EF_A2BGR10,
+				EF_R16,
+				EF_GR16,
+				EF_BGR16,
+				EF_ABGR16,
+				EF_R16UI,
+				EF_GR16UI,
+				EF_BGR16UI,
+				EF_ABGR16UI,
+				EF_SIGNED_R16,
+				EF_SIGNED_GR16,
+				EF_SIGNED_BGR16,
+				EF_SIGNED_ABGR16,
+				EF_R16I,
+				EF_GR16I,
+				EF_BGR16I,
+				EF_ABGR16I,
+				EF_R32UI,
+				EF_GR32UI,
+				EF_BGR32UI,
+				EF_ABGR32UI,
+				EF_R32I,
+				EF_GR32I,
+				EF_BGR32I,
+				EF_ABGR32I,
+				EF_R32F,
+				EF_GR32F,
+				EF_BGR32F,
+				EF_ABGR32F,
+				EF_SIGNED_A2BGR10,
+				EF_R16F,
+				EF_GR16F,
+				EF_BGR16F,
+				EF_ABGR16F
+			};
+			if (glloader_GL_VERSION_4_4() || glloader_GL_ARB_vertex_type_10f_11f_11f_rev())
+			{
+				vertex_formats.push_back(EF_B10G11R11F);
+			}
 
-		GLint max_samples;
-		glGetIntegerv(GL_MAX_SAMPLES_EXT, &max_samples);
-		max_samples_ = static_cast<uint32_t>(max_samples);
+			caps_.AssignVertexFormats(std::move(vertex_formats));
+		}
+		{
+			std::vector<ElementFormat> texture_formats =
+			{
+				EF_A8,
+				EF_ARGB4,
+				EF_R8,
+				EF_SIGNED_R8,
+				EF_GR8,
+				EF_SIGNED_GR8,
+				EF_GR16,
+				EF_SIGNED_GR16,
+				EF_BGR8,
+				EF_SIGNED_BGR8,
+				EF_SIGNED_ABGR8,
+				EF_ARGB8,
+				EF_ABGR8,
+				EF_A2BGR10,
+				EF_SIGNED_A2BGR10,
+				EF_R16,
+				EF_SIGNED_R16,
+				EF_R8UI,
+				EF_R8I,
+				EF_GR8UI,
+				EF_GR8I,
+				EF_BGR8UI,
+				EF_BGR8I,
+				EF_ABGR8UI,
+				EF_ABGR8I,
+				EF_R16UI,
+				EF_R16I,
+				EF_GR16UI,
+				EF_GR16I,
+				EF_BGR16UI,
+				EF_BGR16I,
+				EF_ABGR16UI,
+				EF_ABGR16I,
+				EF_R32UI,
+				EF_R32I,
+				EF_GR32UI,
+				EF_GR32I,
+				EF_BGR32UI,
+				EF_BGR32I,
+				EF_ABGR32UI,
+				EF_ABGR32I,
+				EF_BGR16,
+				EF_SIGNED_BGR16,
+				EF_ABGR16,
+				EF_SIGNED_ABGR16,
+				EF_R16F,
+				EF_GR16F,
+				EF_B10G11R11F,
+				EF_BGR16F,
+				EF_ABGR16F,
+				EF_R32F,
+				EF_GR32F,
+				EF_BGR32F,
+				EF_ABGR32F,
+				EF_BC4,
+				EF_BC5,
+				EF_SIGNED_BC4,
+				EF_SIGNED_BC5,
+				EF_D16,
+				EF_D24S8,
+				EF_D32F,
+				EF_ARGB8_SRGB,
+				EF_ABGR8_SRGB,
+				EF_BC4_SRGB,
+				EF_BC5_SRGB
+			};
+			if (glloader_GL_EXT_texture_compression_s3tc())
+			{
+				texture_formats.insert(texture_formats.end(),
+					{
+						EF_BC1,
+						EF_BC2,
+						EF_BC3
+					});
+			}
+			if (glloader_GL_ARB_texture_compression_bptc())
+			{
+				texture_formats.insert(texture_formats.end(),
+					{
+						EF_BC6,
+						EF_SIGNED_BC6,
+						EF_BC7,
+						EF_BC7_SRGB
+					});
+			}
+			if (glloader_GL_EXT_texture_compression_s3tc())
+			{
+				texture_formats.insert(texture_formats.end(),
+					{
+						EF_BC1_SRGB,
+						EF_BC2_SRGB,
+						EF_BC3_SRGB
+					});
+			}
+			if (glloader_GL_VERSION_4_3() || glloader_GL_ARB_ES3_compatibility())
+			{
+				texture_formats.insert(texture_formats.end(),
+					{
+						EF_ETC1,
+						EF_ETC2_R11,
+						EF_SIGNED_ETC2_R11,
+						EF_ETC2_GR11,
+						EF_SIGNED_ETC2_GR11,
+						EF_ETC2_BGR8,
+						EF_ETC2_BGR8_SRGB,
+						EF_ETC2_A1BGR8,
+						EF_ETC2_A1BGR8_SRGB,
+						EF_ETC2_ABGR8,
+						EF_ETC2_ABGR8_SRGB
+					});
+			}
 
-		rendertarget_format_.push_back(EF_R8);
-		rendertarget_format_.push_back(EF_GR8);
-		rendertarget_format_.push_back(EF_ARGB8);
-		rendertarget_format_.push_back(EF_ABGR8);
-		rendertarget_format_.push_back(EF_SIGNED_ABGR8);
-		rendertarget_format_.push_back(EF_A2BGR10);
-		rendertarget_format_.push_back(EF_SIGNED_A2BGR10);
-		rendertarget_format_.push_back(EF_ABGR8UI);
-		rendertarget_format_.push_back(EF_ABGR8I);
-		rendertarget_format_.push_back(EF_R16);
-		rendertarget_format_.push_back(EF_SIGNED_R16);
-		rendertarget_format_.push_back(EF_GR16);
-		rendertarget_format_.push_back(EF_SIGNED_GR16);
-		rendertarget_format_.push_back(EF_ABGR16);
-		rendertarget_format_.push_back(EF_SIGNED_ABGR16);
-		rendertarget_format_.push_back(EF_R16UI);
-		rendertarget_format_.push_back(EF_R16I);
-		rendertarget_format_.push_back(EF_GR16UI);
-		rendertarget_format_.push_back(EF_GR16I);
-		rendertarget_format_.push_back(EF_ABGR16UI);
-		rendertarget_format_.push_back(EF_ABGR16I);
-		rendertarget_format_.push_back(EF_R32UI);
-		rendertarget_format_.push_back(EF_R32I);
-		rendertarget_format_.push_back(EF_GR32UI);
-		rendertarget_format_.push_back(EF_GR32I);
-		rendertarget_format_.push_back(EF_ABGR32UI);
-		rendertarget_format_.push_back(EF_ABGR32I);
-		rendertarget_format_.push_back(EF_R16F);
-		rendertarget_format_.push_back(EF_GR16F);
-		rendertarget_format_.push_back(EF_R32F);
-		rendertarget_format_.push_back(EF_GR32F);
-		rendertarget_format_.push_back(EF_ABGR16F);
-		rendertarget_format_.push_back(EF_B10G11R11F);
-		rendertarget_format_.push_back(EF_ABGR32F);
-		rendertarget_format_.push_back(EF_D16);
-		rendertarget_format_.push_back(EF_D24S8);
-		rendertarget_format_.push_back(EF_D32F);
-		rendertarget_format_.push_back(EF_ARGB8_SRGB);
-		rendertarget_format_.push_back(EF_ABGR8_SRGB);
+			caps_.AssignTextureFormats(std::move(texture_formats));
+		}
+		{
+			GLint max_samples;
+			glGetIntegerv(GL_MAX_SAMPLES, &max_samples);
 
-		std::sort(vertex_format_.begin(), vertex_format_.end());
-		vertex_format_.erase(std::unique(vertex_format_.begin(), vertex_format_.end()), vertex_format_.end());
-		std::sort(texture_format_.begin(), texture_format_.end());
-		texture_format_.erase(std::unique(texture_format_.begin(), texture_format_.end()), texture_format_.end());
-		std::sort(rendertarget_format_.begin(), rendertarget_format_.end());
-		rendertarget_format_.erase(std::unique(rendertarget_format_.begin(), rendertarget_format_.end()), rendertarget_format_.end());
+			std::map<ElementFormat, std::vector<uint32_t>> render_target_formats;
+			auto add_render_target_format = [&render_target_formats, &max_samples](ArrayRef<ElementFormat> fmts)
+			{
+				for (auto fmt : fmts)
+				{
+					for (int i = 1; i <= max_samples; i *= 2)
+					{
+						render_target_formats[fmt].push_back(RenderDeviceCaps::EncodeSampleCountQuality(i, 1));
+					}
+				}
+			};
 
-		caps_.vertex_format_support = std::bind<bool>(&OGLRenderEngine::VertexFormatSupport, this,
-			std::placeholders::_1);
-		caps_.texture_format_support = std::bind<bool>(&OGLRenderEngine::TextureFormatSupport, this,
-			std::placeholders::_1);
-		caps_.rendertarget_format_support = std::bind<bool>(&OGLRenderEngine::RenderTargetFormatSupport, this,
-			std::placeholders::_1, std::placeholders::_2, std::placeholders::_3);
+			add_render_target_format(
+				{
+					EF_R8,
+					EF_GR8,
+					EF_ARGB8,
+					EF_ABGR8,
+					EF_SIGNED_ABGR8,
+					EF_A2BGR10,
+					EF_SIGNED_A2BGR10,
+					EF_ABGR8UI,
+					EF_ABGR8I,
+					EF_R16,
+					EF_SIGNED_R16,
+					EF_GR16,
+					EF_SIGNED_GR16,
+					EF_ABGR16,
+					EF_SIGNED_ABGR16,
+					EF_R16UI,
+					EF_R16I,
+					EF_GR16UI,
+					EF_GR16I,
+					EF_ABGR16UI,
+					EF_ABGR16I,
+					EF_R32UI,
+					EF_R32I,
+					EF_GR32UI,
+					EF_GR32I,
+					EF_ABGR32UI,
+					EF_ABGR32I,
+					EF_R16F,
+					EF_GR16F,
+					EF_R32F,
+					EF_GR32F,
+					EF_ABGR16F,
+					EF_B10G11R11F,
+					EF_ABGR32F,
+					EF_D16,
+					EF_D24S8,
+					EF_D32F,
+					EF_ARGB8_SRGB,
+					EF_ABGR8_SRGB
+				});
 
-		caps_.depth_texture_support = (caps_.texture_format_support(EF_D24S8) || caps_.texture_format_support(EF_D16));
-		caps_.fp_color_support = ((caps_.texture_format_support(EF_B10G11R11F) && caps_.rendertarget_format_support(EF_B10G11R11F, 1, 0))
-			|| (caps_.texture_format_support(EF_ABGR16F) && caps_.rendertarget_format_support(EF_ABGR16F, 1, 0)));
-		caps_.pack_to_rgba_required = !(caps_.texture_format_support(EF_R16F) && caps_.rendertarget_format_support(EF_R16F, 1, 0)
-			&& caps_.texture_format_support(EF_R32F) && caps_.rendertarget_format_support(EF_R32F, 1, 0));
+			caps_.AssignRenderTargetFormats(std::move(render_target_formats));
+		}
 	}
 
 	void OGLRenderEngine::StereoscopicForLCDShutter(int32_t eye)

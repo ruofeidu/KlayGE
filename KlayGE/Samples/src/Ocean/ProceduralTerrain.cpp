@@ -3,6 +3,8 @@
 #include <KlayGE/PostProcess.hpp>
 #include <KlayGE/Camera.hpp>
 #include <KFL/Half.hpp>
+#include <KlayGE/App3D.hpp>
+#include <KlayGE/DeferredRenderingLayer.hpp>
 
 #include "ProceduralTerrain.hpp"
 
@@ -17,35 +19,13 @@ namespace KlayGE
 		RenderEngine& re = rf.RenderEngineInstance();
 		RenderDeviceCaps const & caps = re.DeviceCaps();
 
-		ElementFormat height_fmt;
-		if (caps.pack_to_rgba_required)
-		{
-			if (caps.rendertarget_format_support(EF_ABGR8, 1, 0))
-			{
-				height_fmt = EF_ABGR8;
-			}
-			else
-			{
-				BOOST_ASSERT(caps.rendertarget_format_support(EF_ARGB8, 1, 0));
-				height_fmt = EF_ARGB8;
-			}
-		}
-		else
-		{
-			if (caps.rendertarget_format_support(EF_R16F, 1, 0))
-			{
-				height_fmt = EF_R16F;
-			}
-			else
-			{
-				BOOST_ASSERT(caps.rendertarget_format_support(EF_R32F, 1, 0));
-				height_fmt = EF_R32F;
-			}
-		}
+		auto const height_fmt = caps.BestMatchTextureRenderTargetFormat(caps.pack_to_rgba_required ? MakeArrayRef({ EF_ABGR8, EF_ARGB8 })
+			: MakeArrayRef({ EF_R16F, EF_R32F }), 1, 0);
+		BOOST_ASSERT(height_fmt != EF_Unknown);
 		height_map_tex_ = rf.MakeTexture2D(COARSE_HEIGHT_MAP_SIZE, COARSE_HEIGHT_MAP_SIZE, 1, 1, height_fmt,
-			1, 0, EAH_GPU_Read | EAH_GPU_Write, nullptr);
+			1, 0, EAH_GPU_Read | EAH_GPU_Write);
 		height_map_cpu_tex_ = rf.MakeTexture2D(height_map_tex_->Width(0), height_map_tex_->Height(0),
-			1, 1, height_map_tex_->Format(), 1, 0, EAH_CPU_Read, nullptr);
+			1, 1, height_map_tex_->Format(), 1, 0, EAH_CPU_Read);
 
 		ElementFormat gradient_fmt;
 		if (EF_R16F == height_fmt)
@@ -61,24 +41,16 @@ namespace KlayGE
 			gradient_fmt = height_fmt;
 		}
 		gradient_map_tex_ = rf.MakeTexture2D(COARSE_HEIGHT_MAP_SIZE, COARSE_HEIGHT_MAP_SIZE, 1, 1, gradient_fmt,
-			1, 0, EAH_GPU_Read | EAH_GPU_Write, nullptr);
+			1, 0, EAH_GPU_Read | EAH_GPU_Write);
 		gradient_map_cpu_tex_ = rf.MakeTexture2D(gradient_map_tex_->Width(0), gradient_map_tex_->Height(0),
-			1, 1, gradient_map_tex_->Format(), 1, 0, EAH_CPU_Read, nullptr);
+			1, 1, gradient_map_tex_->Format(), 1, 0, EAH_CPU_Read);
 
-		ElementFormat mask_fmt;
-		if (caps.texture_format_support(EF_ABGR8))
-		{
-			mask_fmt = EF_ABGR8;
-		}
-		else
-		{
-			BOOST_ASSERT(caps.texture_format_support(EF_ARGB8));
-			mask_fmt = EF_ARGB8;
-		}
+		auto const mask_fmt = re.DeviceCaps().BestMatchTextureRenderTargetFormat({ EF_ABGR8, EF_ARGB8 }, 1, 0);
+		BOOST_ASSERT(mask_fmt != EF_Unknown);
 		mask_map_tex_ = rf.MakeTexture2D(COARSE_HEIGHT_MAP_SIZE, COARSE_HEIGHT_MAP_SIZE, 1, 1, mask_fmt,
-			1, 0, EAH_GPU_Read | EAH_GPU_Write, nullptr);
+			1, 0, EAH_GPU_Read | EAH_GPU_Write);
 		mask_map_cpu_tex_ = rf.MakeTexture2D(mask_map_tex_->Width(0), mask_map_tex_->Height(0),
-			1, 1, mask_map_tex_->Format(), 1, 0, EAH_CPU_Read, nullptr);
+			1, 1, mask_map_tex_->Format(), 1, 0, EAH_CPU_Read);
 
 		height_pp_ = SyncLoadPostProcess("ProceduralTerrain.ppml", "height");
 		gradient_pp_ = SyncLoadPostProcess("ProceduralTerrain.ppml", "gradient");
@@ -92,6 +64,8 @@ namespace KlayGE
 		mask_pp_->InputPin(0, height_map_tex_);
 		mask_pp_->InputPin(1, gradient_map_tex_);
 		mask_pp_->OutputPin(0, mask_map_tex_);
+
+		mvp_wo_oblique_param_ = effect_->ParameterByName("mvp_wo_oblique");
 	}
 
 	void ProceduralTerrain::FlushTerrainData()
@@ -122,5 +96,43 @@ namespace KlayGE
 		//SaveTexture(height_map_cpu_tex_, "height_map.dds");
 		//SaveTexture(gradient_map_tex_, "gradient_map.dds");
 		//SaveTexture(mask_map_tex_, "mask_map.dds");
+	}
+
+	void ProceduralTerrain::ReflectionPlane(Plane const & plane)
+	{
+		reflection_plane_ = plane;
+	}
+
+	void ProceduralTerrain::OnRenderBegin()
+	{
+		HQTerrainRenderable::OnRenderBegin();
+
+		auto const& pmccb = Context::Instance().RenderFactoryInstance().RenderEngineInstance().PredefinedModelCameraCBufferInstance();
+
+		*mvp_wo_oblique_param_ = MathLib::transpose(pmccb.Mvp(*model_camera_cbuffer_));
+
+		auto drl = Context::Instance().DeferredRenderingLayerInstance();
+		if (drl && (drl->ActiveViewport() == 0))
+		{
+			App3DFramework const & app = Context::Instance().AppInstance();
+			Camera const & camera = app.ActiveCamera();
+			float4x4 const & view = camera.ViewMatrix();
+			float4x4 proj = camera.ProjMatrixWOAdjust();
+
+			MathLib::oblique_clipping(proj,
+				MathLib::mul(reflection_plane_, MathLib::transpose(camera.InverseViewMatrix())));
+			Context::Instance().RenderFactoryInstance().RenderEngineInstance().AdjustProjectionMatrix(proj);
+
+			float4x4 mvp = model_mat_ * view * proj;
+
+			int32_t cas_index = drl->CurrCascadeIndex();
+			if (cas_index >= 0)
+			{
+				mvp *= drl->GetCascadedShadowLayer()->CascadeCropMatrix(cas_index);
+			}
+
+			pmccb.Mvp(*model_camera_cbuffer_) = MathLib::transpose(mvp);
+			model_camera_cbuffer_->Dirty(true);
+		}
 	}
 }

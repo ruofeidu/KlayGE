@@ -3,11 +3,8 @@
 <effect>
 	<include name="util.fxml"/>
 	<include name="Lighting.fxml"/>
-
-	<parameter type="float4x4" name="mvp"/>
-
-	<parameter type="float3" name="eye_pos"/>
-	<parameter type="float3" name="look_at_vec"/>
+	<include name="Mesh.fxml"/>
+	<include name="ModelCamera.fxml"/>
 
 	<parameter type="texture2D" name="earth_day_tex">
 		<annotation type="string" name="SasResourceAddress" value="earth_day.dds"/>
@@ -30,11 +27,6 @@
 	<parameter type="float3" name="light_dir"/>
 	<parameter type="float3" name="beta" x="38.05" y="82.36" z="214.65"/>
 	<parameter type="float3" name="absorb" x="0.75" y="0.85" z="1"/>
-
-	<parameter type="float3" name="pos_center"/>
-	<parameter type="float3" name="pos_extent"/>
-	<parameter type="float2" name="tc_center"/>
-	<parameter type="float2" name="tc_extent"/>
 
 	<macro name="LN2" value="0.693147181"/>
 	<macro name="H50" value="(density * LN2)"/>
@@ -130,11 +122,7 @@ void AerialPerspective(float3 r0, float3 r1, bool infinite,
 	// initialization of
 	// the integration loop variables
 
-#if KLAYGE_SHADER_MODEL >= SHADER_MODEL(3, 0)
 	const int NMAX = 8;
-#else
-	const int NMAX = 4;
-#endif
 	int N = NMAX;
 	float range = t1 - t0;
 	float dt = range / (N - 1);

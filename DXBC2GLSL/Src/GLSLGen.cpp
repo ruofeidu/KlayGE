@@ -37,6 +37,9 @@
 
 #include <DXBC2GLSL/GLSLGen.hpp>
 
+#include <KFL/CXX17.hpp>
+#include <KFL/CXX17/iterator.hpp>
+
 #include <string>
 #include <ostream>
 
@@ -56,12 +59,14 @@ namespace
 		"430",
 		"440",
 		"450",
+		"460",
 
 		"100",
 		"300 es",
 		"310 es",
 		"320 es"
 	};
+	KLAYGE_STATIC_ASSERT(GSV_NumVersions == std::size(GLSLVersionStr));
 
 
 	uint32_t bitcount32(uint32_t x)
@@ -190,6 +195,10 @@ uint32_t GLSLGen::DefaultRules(GLSLVersion version)
 		}
 		if (version >= GSV_450)
 		{
+			rules |= GSR_ExplicitMultiSample;
+		}
+		if (version >= GSV_460)
+		{
 		}
 	}
 	else
@@ -229,12 +238,13 @@ uint32_t GLSLGen::DefaultRules(GLSLVersion version)
 }
 
 void GLSLGen::FeedDXBC(std::shared_ptr<ShaderProgram> const & program,
-		bool has_gs, ShaderTessellatorPartitioning ds_partitioning, ShaderTessellatorOutputPrimitive ds_output_primitive,
+		bool has_gs, bool has_ps, ShaderTessellatorPartitioning ds_partitioning, ShaderTessellatorOutputPrimitive ds_output_primitive,
 		GLSLVersion version, uint32_t glsl_rules)
 {
 	program_ = program;
 	shader_type_ = program_->version.type;
 	has_gs_ = has_gs;
+	has_ps_ = has_ps;
 	ds_partitioning_ = ds_partitioning;
 	ds_output_primitive_ = ds_output_primitive;
 	glsl_version_ = version;
@@ -702,7 +712,9 @@ void GLSLGen::ToDclInterShaderOutputRecords(std::ostream& out)
 			if (output_var)
 			{
 				int num_comps = 4;
-				if (ST_PS == shader_type_)
+				if (((ST_VS == shader_type_) && !has_gs_ && !has_ps_) || ((ST_DS == shader_type_) && !has_gs_ && !has_ps_)
+					|| ((ST_GS == shader_type_) && !has_ps_)
+					|| (ST_PS == shader_type_))
 				{
 					num_comps = bitcount32(program_->params_out[i].mask);
 				}
@@ -1020,8 +1032,15 @@ void GLSLGen::ToCopyToInterShaderInputRegisters(std::ostream& out) const
 						need_comps = true;
 						break;
 
+					// TODO: Processing SN_CLIP_DISTANCE and SN_CULL_DISTANCE
+
 					case SN_RENDER_TARGET_ARRAY_INDEX:
 						out << "gl_Layer";
+						need_comps = false;
+						break;
+
+					case SN_VIEWPORT_ARRAY_INDEX:
+						out << "gl_ViewportIndex";
 						need_comps = false;
 						break;
 
@@ -1030,18 +1049,34 @@ void GLSLGen::ToCopyToInterShaderInputRegisters(std::ostream& out) const
 						need_comps = false;
 						break;
 
-					case SN_INSTANCE_ID:
-						out << "gl_InstanceID";
-						need_comps = false;
-						break;
-
 					case SN_PRIMITIVE_ID:
 						out << "gl_PrimitiveID";
 						need_comps = false;
 						break;
 
-					case SN_VIEWPORT_ARRAY_INDEX:
-						out << "gl_ViewportIndex";
+					case SN_INSTANCE_ID:
+						out << "gl_InstanceID";
+						need_comps = false;
+						break;
+
+					case SN_IS_FRONT_FACE:
+						if (glsl_rules_ & GSR_UIntType)
+						{
+							out << "uint";
+						}
+						out << "(gl_FrontFacing ? 1 : 0)";
+						need_comps = false;
+						break;
+
+					case SN_SAMPLE_INDEX:
+						if (glsl_rules_ & GSR_ExplicitMultiSample)
+						{
+							out << "gl_SampleID";
+						}
+						else
+						{
+							out << "0";
+						}
 						need_comps = false;
 						break;
 
@@ -1685,7 +1720,28 @@ void GLSLGen::ToDeclaration(std::ostream& out, ShaderDecl const & dcl)
 			switch (cbuffer.vars[0].type_desc.var_class)
 			{
 			case SVC_VECTOR:
-				out << cbuffer.vars[0].type_desc.name << cbuffer.vars[0].type_desc.columns;
+				{
+					std::string name;
+					switch (cbuffer.vars[0].type_desc.type)
+					{
+					case SVT_INT:
+						name = "ivec";
+						break;
+
+					case SVT_UINT:
+						name = "uvec";
+						break;
+
+					case SVT_FLOAT:
+						name = "vec";
+						break;
+
+					default:
+						name = cbuffer.vars[0].type_desc.name;
+						break;
+					}
+					out << name << cbuffer.vars[0].type_desc.columns;
+				}
 				break;
 
 			case SVC_SCALAR:
@@ -3780,7 +3836,6 @@ void GLSLGen::ToInstruction(std::ostream& out, ShaderInstruction const & insn) c
 		{
 			//ignore _uint suffix
 			//process _rcpFloat suffix
-			char const * c = (SRIRT_RCPFLOAT == insn.insn.resinfo_return_type) ? "1.0/" : "";
 			for (auto const & tex : textures_)
 			{
 				if (tex.tex_index == insn.ops[2]->indices[0].disp)
@@ -3794,18 +3849,24 @@ void GLSLGen::ToInstruction(std::ostream& out, ShaderInstruction const & insn) c
 					switch (insn.resource_target)
 					{
 					case SRD_TEXTURE1D:
+						//dest.x=float(textureSize(src0,src1).x);
+						this->ToOperands(out, *insn.ops[0], oot | (oot << 8), false);
+						this->ToSingleComponentSelector(out, *insn.ops[0], 0);
+						out << " = ";
 						if (SRIRT_RCPFLOAT == insn.insn.resinfo_return_type)
 						{
-							//dest.x=float(textureSize(src0,src1));
-							this->ToOperands(out, *insn.ops[0], oot | (oot << 8), false);
+							out << "1.0 / float(";
 						}
-						this->ToSingleComponentSelector(out, *insn.ops[0], 0);
-						out << " = " << c << "float(textureSize(";
+						out << "textureSize(";
 						this->ToOperands(out, *insn.ops[2], oit, false);
 						out << s;
 						out << ", ";
 						this->ToOperands(out, *insn.ops[1], oit);
-						out << "));";
+						if (SRIRT_RCPFLOAT == insn.insn.resinfo_return_type)
+						{
+							out << ")";
+						}
+						out << ");";
 						if (this->GetOperandComponentNum(*insn.ops[0]) == 2)
 						{
 							out << "\n";
@@ -3823,25 +3884,42 @@ void GLSLGen::ToInstruction(std::ostream& out, ShaderInstruction const & insn) c
 						//dest.x=float(textureSize(src0,src1).x);
 						this->ToOperands(out, *insn.ops[0], oot | (oot << 8), false);
 						this->ToSingleComponentSelector(out, *insn.ops[0], 0);
-						out << " = " << c << "float(textureSize(";
+						out << " = ";
+						if (SRIRT_RCPFLOAT == insn.insn.resinfo_return_type)
+						{
+							out << "1.0 / float(";
+						}
+						out << "textureSize(";
 						this->ToOperands(out, *insn.ops[2], oit, false);
 						out << s;
 						out << ", ";
 						this->ToOperands(out, *insn.ops[1], oit);
 						out << ")";
 						this->ToSingleComponentSelector(out, *insn.ops[0], 0);
-						out << ");\n";
+						if (SRIRT_RCPFLOAT == insn.insn.resinfo_return_type)
+						{
+							out << ")";
+						}
+						out << ";\n";
 						//dest.y=float(textureSize(src0,src1).y);
 						this->ToOperands(out, *insn.ops[0], oot | (oot << 8), false);
 						this->ToSingleComponentSelector(out, *insn.ops[0], 1);
-						out << " = " << c << "float(textureSize(";
+						out << " = ";
+						if (SRIRT_RCPFLOAT == insn.insn.resinfo_return_type)
+						{
+							out << "1.0 / float(";
+						}
 						this->ToOperands(out, *insn.ops[2], oit, false);
 						out << s;
 						out << ", ";
 						this->ToOperands(out, *insn.ops[1], oit);
 						out << ")";
 						this->ToSingleComponentSelector(out, *insn.ops[0], 1);
-						out << ");";
+						if (SRIRT_RCPFLOAT == insn.insn.resinfo_return_type)
+						{
+							out << ")";
+						}
+						out << ";";
 						if (3 == this->GetOperandComponentNum(*insn.ops[0]))
 						{
 							out << "\n";
@@ -3856,64 +3934,104 @@ void GLSLGen::ToInstruction(std::ostream& out, ShaderInstruction const & insn) c
 						break;
 
 					case SRD_TEXTURE2DMS:
-						//dest.x=float(textureSize(src0,src1).x);
+						//dest.x=float(textureSize(src0).x);
 						this->ToOperands(out, *insn.ops[0], oot | (oot << 8), false);
 						this->ToSingleComponentSelector(out, *insn.ops[0], 0);
-						out << " = " << c << "float(textureSize(";
+						out << " = ";
+						if (SRIRT_RCPFLOAT == insn.insn.resinfo_return_type)
+						{
+							out << "1.0 / float(";
+						}
+						out << "textureSize(";
 						this->ToOperands(out, *insn.ops[2], oit, false);
-						out << s;
-						out << ", ";
-						this->ToOperands(out, *insn.ops[1], oit);
-						out << ")";
+						out << s << ")";
 						this->ToSingleComponentSelector(out, *insn.ops[0], 0);
-						out << ");\n";
-						//dest.y=float(textureSize(src0,src1).y);
+						if (SRIRT_RCPFLOAT == insn.insn.resinfo_return_type)
+						{
+							out << ")";
+						}
+						out << ";\n";
+						//dest.y=float(textureSize(src0).y);
 						this->ToOperands(out, *insn.ops[0], oot | (oot << 8), false);
 						this->ToSingleComponentSelector(out, *insn.ops[0], 1);
-						out << " = " << c << "float(textureSize(";
+						out << " = ";
+						if (SRIRT_RCPFLOAT == insn.insn.resinfo_return_type)
+						{
+							out << "1.0 / float(";
+						}
+						out << "textureSize(";
 						this->ToOperands(out, *insn.ops[2], oit, false);
 						out << s;
-						out << ", ";
-						this->ToOperands(out, *insn.ops[1], oit);
 						out << ")";
 						this->ToSingleComponentSelector(out, *insn.ops[0], 1);
-						out << ");";
+						if (SRIRT_RCPFLOAT == insn.insn.resinfo_return_type)
+						{
+							out << ")";
+						}
+						out << ";";
 						break;
 
 					case SRD_TEXTURE3D:
 						//dest.x=float(textureSize(src0,src1).x);
 						this->ToOperands(out, *insn.ops[0], oot | (oot << 8), false);
 						this->ToSingleComponentSelector(out, *insn.ops[0], 0);
-						out << " = " << c << "float(textureSize(";
+						out << " = ";
+						if (SRIRT_RCPFLOAT == insn.insn.resinfo_return_type)
+						{
+							out << "1.0 / float(";
+						}
+						out << "textureSize(";
 						this->ToOperands(out, *insn.ops[2], oit, false);
 						out << s;
 						out << ", ";
 						this->ToOperands(out, *insn.ops[1], oit);
 						out << ")";
 						this->ToSingleComponentSelector(out, *insn.ops[0], 0);
-						out << ");\n";
+						if (SRIRT_RCPFLOAT == insn.insn.resinfo_return_type)
+						{
+							out << ")";
+						}
+						out << ";\n";
 						//dest.y=float(textureSize(src0,src1).y);
 						this->ToOperands(out, *insn.ops[0], oot | (oot << 8), false);
 						this->ToSingleComponentSelector(out, *insn.ops[0], 1);
-						out << " = " << c << "float(textureSize(";
+						out << " = ";
+						if (SRIRT_RCPFLOAT == insn.insn.resinfo_return_type)
+						{
+							out << "1.0 / float(";
+						}
+						out << "textureSize(";
 						this->ToOperands(out, *insn.ops[2], oit, false);
 						out << s;
 						out << ", ";
 						this->ToOperands(out, *insn.ops[1], oit);
 						out << ")";
 						this->ToSingleComponentSelector(out, *insn.ops[0], 1);
-						out << ");\n";
+						if (SRIRT_RCPFLOAT == insn.insn.resinfo_return_type)
+						{
+							out << ")";
+						}
+						out << ";\n";
 						//dest.z=float(textureSize(src0,src1).z);
 						this->ToOperands(out, *insn.ops[0], oot | (oot << 8), false);
 						this->ToSingleComponentSelector(out, *insn.ops[0], 2);
-						out << " = " << c << "float(textureSize(";
+						out << " = ";
+						if (SRIRT_RCPFLOAT == insn.insn.resinfo_return_type)
+						{
+							out << "1.0 / float(";
+						}
+						out << "textureSize(";
 						this->ToOperands(out, *insn.ops[2], oit, false);
 						out << s;
 						out << ", ";
 						this->ToOperands(out, *insn.ops[1], oit);
 						out << ")";
 						this->ToSingleComponentSelector(out, *insn.ops[0], 2);
-						out << ");";
+						if (SRIRT_RCPFLOAT == insn.insn.resinfo_return_type)
+						{
+							out << ")";
+						}
+						out << ";";
 						if (4 == this->GetOperandComponentNum(*insn.ops[0]))
 						{
 							out << "\n";
@@ -3931,25 +4049,43 @@ void GLSLGen::ToInstruction(std::ostream& out, ShaderInstruction const & insn) c
 						//dest.x=float(textureSize(src0,src1).x);
 						this->ToOperands(out, *insn.ops[0], oot | (oot << 8), false);
 						this->ToSingleComponentSelector(out, *insn.ops[0], 0);
-						out << " = " << c << "float(textureSize(";
+						out << " = ";
+						if (SRIRT_RCPFLOAT == insn.insn.resinfo_return_type)
+						{
+							out << "1.0 / float(";
+						}
+						out << "textureSize(";
 						this->ToOperands(out, *insn.ops[2], oit, false);
 						out << s;
 						out << ", ";
 						this->ToOperands(out, *insn.ops[1], oit);
 						out << ")";
 						this->ToSingleComponentSelector(out, *insn.ops[0], 0);
-						out << ");\n";
+						if (SRIRT_RCPFLOAT == insn.insn.resinfo_return_type)
+						{
+							out << ")";
+						}
+						out << ";\n";
 						//dest.y=float(textureSize(src0,src1).y);
 						this->ToOperands(out, *insn.ops[0], oot | (oot << 8), false);
 						this->ToSingleComponentSelector(out, *insn.ops[0], 1);
-						out << " = " << c << "float(textureSize(";
+						out << " = ";
+						if (SRIRT_RCPFLOAT == insn.insn.resinfo_return_type)
+						{
+							out << "1.0 / float(";
+						}
+						out << "textureSize(";
 						this->ToOperands(out, *insn.ops[2], oit, false);
 						out << s;
 						out << ", ";
 						this->ToOperands(out, *insn.ops[1], oit);
 						out << ")";
 						this->ToSingleComponentSelector(out, *insn.ops[0], 1);
-						out << ");";
+						if (SRIRT_RCPFLOAT == insn.insn.resinfo_return_type)
+						{
+							out << ")";
+						}
+						out << ";";
 						if (3 == this->GetOperandComponentNum(*insn.ops[0]))
 						{
 							out << "\n";
@@ -3967,25 +4103,34 @@ void GLSLGen::ToInstruction(std::ostream& out, ShaderInstruction const & insn) c
 						//dest.x=float(textureSize(src0,src1).x);
 						this->ToOperands(out, *insn.ops[0], oot | (oot << 8), false);
 						this->ToSingleComponentSelector(out, *insn.ops[0], 0);
-						out << " = " << c << "float(textureSize(";
+						out << " = ";
+						if (SRIRT_RCPFLOAT == insn.insn.resinfo_return_type)
+						{
+							out << "1.0 / float(";
+						}
+						out << "textureSize(";
 						this->ToOperands(out, *insn.ops[2], oit, false);
 						out << s;
 						out << ", ";
 						this->ToOperands(out, *insn.ops[1], oit);
 						out << ")";
 						this->ToSingleComponentSelector(out, *insn.ops[0], 0);
-						out << ");\n";
+						if (SRIRT_RCPFLOAT == insn.insn.resinfo_return_type)
+						{
+							out << ")";
+						}
+						out << ";\n";
 						//dest.y=float(textureSize(src0,src1).y);
 						this->ToOperands(out, *insn.ops[0], oot | (oot << 8), false);
 						this->ToSingleComponentSelector(out, *insn.ops[0], 1);
-						out << " = float(textureSize(";
+						out << " = textureSize(";
 						this->ToOperands(out, *insn.ops[2], oit, false);
 						out << s;
 						out << ", ";
 						this->ToOperands(out, *insn.ops[1], oit);
 						out << ")";
 						this->ToSingleComponentSelector(out, *insn.ops[0], 1);
-						out << ");";
+						out << ";";
 						if (3 == this->GetOperandComponentNum(*insn.ops[0]))
 						{
 							out << "\n";
@@ -4003,36 +4148,52 @@ void GLSLGen::ToInstruction(std::ostream& out, ShaderInstruction const & insn) c
 						//dest.x=float(textureSize(src0,src1).x);
 						this->ToOperands(out, *insn.ops[0], oot | (oot << 8), false);
 						this->ToSingleComponentSelector(out, *insn.ops[0], 0);
-						out << " = " << c << "float(textureSize(";
+						out << " = ";
+						if (SRIRT_RCPFLOAT == insn.insn.resinfo_return_type)
+						{
+							out << "1.0 / float(";
+						}
+						out << "textureSize(";
 						this->ToOperands(out, *insn.ops[2], oit, false);
 						out << s;
 						out << ", ";
 						this->ToOperands(out, *insn.ops[1], oit);
 						out << ")";
 						this->ToSingleComponentSelector(out, *insn.ops[0], 0);
-						out << ");\n";
+						if (SRIRT_RCPFLOAT == insn.insn.resinfo_return_type)
+						{
+							out << ")";
+						}
+						out << ";\n";
 						//dest.y=float(textureSize(src0,src1).y);
 						this->ToOperands(out, *insn.ops[0], oot | (oot << 8), false);
 						this->ToSingleComponentSelector(out, *insn.ops[0], 1);
-						out << " = " << c << "float(textureSize(";
+						if (SRIRT_RCPFLOAT == insn.insn.resinfo_return_type)
+						{
+							out << "1.0 / float(";
+						}
 						this->ToOperands(out, *insn.ops[2], oit, false);
 						out << s;
 						out << ", ";
 						this->ToOperands(out, *insn.ops[1], oit);
 						out << ")";
 						this->ToSingleComponentSelector(out, *insn.ops[0], 1);
-						out << ");\n";
+						if (SRIRT_RCPFLOAT == insn.insn.resinfo_return_type)
+						{
+							out << ")";
+						}
+						out << ";\n";
 						//dest.z=float(textureSize(src0,src1).z);
 						this->ToOperands(out, *insn.ops[0], oot | (oot << 8), false);
 						this->ToSingleComponentSelector(out, *insn.ops[0], 2);
-						out << " = float(textureSize(";
+						out << " = textureSize(";
 						this->ToOperands(out, *insn.ops[2], oit, false);
 						out << s;
 						out << ", ";
 						this->ToOperands(out, *insn.ops[1], oit);
 						out << ")";
 						this->ToSingleComponentSelector(out, *insn.ops[0], 2);
-						out << ");";
+						out << ";";
 						if (4 == this->GetOperandComponentNum(*insn.ops[0]))
 						{
 							out << "\n";
@@ -4058,39 +4219,48 @@ void GLSLGen::ToInstruction(std::ostream& out, ShaderInstruction const & insn) c
 						//but according to assemble instructions,parameters should be width,height,samples,elements
 						//-------------------------------------------------------------------------------------------
 					case SRD_TEXTURE2DMSARRAY:
-						//dest.x=float(textureSize(src0,src1).x);
+						//dest.x=float(textureSize(src0).x);
 						this->ToOperands(out, *insn.ops[0], oot | (oot << 8), false);
 						this->ToSingleComponentSelector(out, *insn.ops[0], 0);
-						out << " = " << c << "float(textureSize(";
+						out << " = ";
+						if (SRIRT_RCPFLOAT == insn.insn.resinfo_return_type)
+						{
+							out << "1.0 / float(";
+						}
+						out << "textureSize(";
 						this->ToOperands(out, *insn.ops[2], oit, false);
-						out << s;
-						out << ", ";
-						this->ToOperands(out, *insn.ops[1], oit);
-						out << ")";
+						out << s << ")";
 						this->ToSingleComponentSelector(out, *insn.ops[0], 0);
-						out << ");\n";
-						//dest.y=float(textureSize(src0,src1).y);
+						if (SRIRT_RCPFLOAT == insn.insn.resinfo_return_type)
+						{
+							out << ")";
+						}
+						out << ";\n";
+						//dest.y=float(textureSize(src0).y);
 						this->ToOperands(out, *insn.ops[0], oot | (oot << 8), false);
 						this->ToSingleComponentSelector(out, *insn.ops[0], 1);
-						out << " = " << c << "float(textureSize(";
+						out << " = ";
+						if (SRIRT_RCPFLOAT == insn.insn.resinfo_return_type)
+						{
+							out << "1.0 / float(";
+						}
+						out << "textureSize(";
 						this->ToOperands(out, *insn.ops[2], oit, false);
-						out << s;
-						out << ", ";
-						this->ToOperands(out, *insn.ops[1], oit);
-						out << ")";
+						out << s << ")";
 						this->ToSingleComponentSelector(out, *insn.ops[0], 1);
-						out << ");\n";
-						//dest.z=float(textureSize(src0,src1).z);
+						if (SRIRT_RCPFLOAT == insn.insn.resinfo_return_type)
+						{
+							out << ")";
+						}
+						out << ";\n";
+						//dest.z=float(textureSize(src0).z);
 						this->ToOperands(out, *insn.ops[0], oot | (oot << 8), false);
 						this->ToSingleComponentSelector(out, *insn.ops[0], 2);
-						out << " = float(textureSize(";
+						out << " = textureSize(";
 						this->ToOperands(out, *insn.ops[2], oit, false);
-						out << s;
-						out << ", ";
-						this->ToOperands(out, *insn.ops[1], oit);
-						out << ")";
+						out << s << ")";
 						this->ToSingleComponentSelector(out, *insn.ops[0], 2);
-						out << ");";
+						out << ";";
 						break;
 
 						//SM5 does not support query element count of cube array
@@ -4108,8 +4278,36 @@ void GLSLGen::ToInstruction(std::ostream& out, ShaderInstruction const & insn) c
 		break;
 
 	case SO_SAMPLE_INFO:
-		//dest.mask=?
-		BOOST_ASSERT_MSG(false, "for sampleinfo,there's no corresponding instruction in glsl");
+		//dest.mask=uint(textureSamples(src0));
+		for (auto const & tex : textures_)
+		{
+			if (tex.tex_index == insn.ops[0]->indices[0].disp)
+			{
+				std::string s;
+				if (!tex.samplers.empty())
+				{
+					DXBCInputBindDesc const & desc = this->GetResourceDesc(SIT_SAMPLER, static_cast<uint32_t>(tex.samplers[0].index));
+					s = std::string("_") + desc.name;
+				}
+				this->ToOperands(out, *insn.ops[0], oot | (oot << 8));
+				out << " = ";
+				if (glsl_rules_ & GSR_ExplicitMultiSample)
+				{
+					out << "uint(textureSamples(";
+					this->ToOperands(out, *insn.ops[1], oit, false);
+					out << s;
+					out << "))";
+				}
+				else
+				{
+					BOOST_ASSERT_MSG(false, "for sampleinfo, there's no corresponding instruction in glsl 4.5-");
+					out << "1";
+				}
+				out << ";";
+
+				break;
+			}
+		}
 		break;
 
 	case SO_BUFINFO:
@@ -4117,7 +4315,7 @@ void GLSLGen::ToInstruction(std::ostream& out, ShaderInstruction const & insn) c
 		{
 			for (auto const & tex : textures_)
 			{
-				if (tex.tex_index == insn.ops[2]->indices[0].disp)
+				if (tex.tex_index == insn.ops[0]->indices[0].disp)
 				{
 					std::string s;
 					if (!tex.samplers.empty())
@@ -4202,8 +4400,20 @@ void GLSLGen::ToInstruction(std::ostream& out, ShaderInstruction const & insn) c
 				BOOST_ASSERT(false);
 				break;
 			}
+			oot = this->FindTextureReturnType(*insn.ops[2]);
 			this->ToOperands(out, *insn.ops[0], oot | (oot << 8));
-			out << " = vec4(texture" << ((glsl_rules_ & GSR_GenericTexture) ? "" : texture_type)
+			out << " = ";
+			switch (oot)
+			{
+			case SIT_UInt:
+			case SIT_Int:
+				out << "i";
+				break;
+
+			default:
+				break;
+			}
+			out << "vec4(texture" << ((glsl_rules_ & GSR_GenericTexture) ? "" : texture_type)
 				<< (offset ? "Offset" : "") << "(";
 			this->ToOperands(out, *insn.ops[2], oit, false);
 			out << "_";
@@ -4291,8 +4501,20 @@ void GLSLGen::ToInstruction(std::ostream& out, ShaderInstruction const & insn) c
 				BOOST_ASSERT(false);
 				break;
 			}
+			oot = this->FindTextureReturnType(*insn.ops[2]);
 			this->ToOperands(out, *insn.ops[0], oot | (oot << 8));
-			out << " = vec4(texture" << ((glsl_rules_ & GSR_GenericTexture) ? "" : texture_type)
+			out << " = ";
+			switch (oot)
+			{
+			case SIT_UInt:
+			case SIT_Int:
+				out << "i";
+				break;
+
+			default:
+				break;
+			}
+			out << "vec4(texture" << ((glsl_rules_ & GSR_GenericTexture) ? "" : texture_type)
 				<< (offset ? "Offset" : "") << "(";
 			this->ToOperands(out, *insn.ops[2], oit, false);
 			out << "_";
@@ -4361,8 +4583,20 @@ void GLSLGen::ToInstruction(std::ostream& out, ShaderInstruction const & insn) c
 				BOOST_ASSERT(false);
 				break;
 			}
+			oot = this->FindTextureReturnType(*insn.ops[2]);
 			this->ToOperands(out, *insn.ops[0], oot | (oot << 8));
-			out << " = vec4(texture" << ((glsl_rules_ & GSR_GenericTexture) ? "" : texture_type)
+			out << " = ";
+			switch (oot)
+			{
+			case SIT_UInt:
+			case SIT_Int:
+				out << "i";
+				break;
+
+			default:
+				break;
+			}
+			out << "vec4(texture" << ((glsl_rules_ & GSR_GenericTexture) ? "" : texture_type)
 				<< (offset ? "Offset" : "") << "(";
 			this->ToOperands(out, *insn.ops[2], oit, false);
 			out << "_";
@@ -4452,8 +4686,20 @@ void GLSLGen::ToInstruction(std::ostream& out, ShaderInstruction const & insn) c
 				BOOST_ASSERT(false);
 				break;
 			}
+			oot = this->FindTextureReturnType(*insn.ops[2]);
 			this->ToOperands(out, *insn.ops[0], oot | (oot << 8));
-			out << " = vec4(texture" << ((glsl_rules_ & GSR_GenericTexture) ? "" : texture_type)
+			out << " = ";
+			switch (oot)
+			{
+			case SIT_UInt:
+			case SIT_Int:
+				out << "i";
+				break;
+
+			default:
+				break;
+			}
+			out << "vec4(texture" << ((glsl_rules_ & GSR_GenericTexture) ? "" : texture_type)
 				<< "Lod" << (offset ? "Offset" : "") << "(";
 			this->ToOperands(out, *insn.ops[2], oit, false);
 			out << "_";
@@ -4560,8 +4806,20 @@ void GLSLGen::ToInstruction(std::ostream& out, ShaderInstruction const & insn) c
 				BOOST_ASSERT(false);
 				break;
 			}
+			oot = this->FindTextureReturnType(*insn.ops[2]);
 			this->ToOperands(out, *insn.ops[0], oot | (oot << 8));
-			out << " = vec4(texture" << ((glsl_rules_ & GSR_GenericTexture) ? "" : texture_type)
+			out << " = ";
+			switch (oot)
+			{
+			case SIT_UInt:
+			case SIT_Int:
+				out << "i";
+				break;
+
+			default:
+				break;
+			}
+			out << "vec4(texture" << ((glsl_rules_ & GSR_GenericTexture) ? "" : texture_type)
 				<< "Lod" << (offset ? "Offset" : "") << "(";
 			this->ToOperands(out, *insn.ops[2], oit, false);
 			out << "_";
@@ -4657,8 +4915,20 @@ void GLSLGen::ToInstruction(std::ostream& out, ShaderInstruction const & insn) c
 				BOOST_ASSERT(false);
 				break;
 			}
+			oot = this->FindTextureReturnType(*insn.ops[2]);
 			this->ToOperands(out, *insn.ops[0], oot | (oot << 8));
-			out << " = vec4(texture" << ((glsl_rules_ & GSR_GenericTexture) ? "" : texture_type)
+			out << " = ";
+			switch (oot)
+			{
+			case SIT_UInt:
+			case SIT_Int:
+				out << "i";
+				break;
+
+			default:
+				break;
+			}
+			out << "vec4(texture" << ((glsl_rules_ & GSR_GenericTexture) ? "" : texture_type)
 				<< ((glsl_rules_ & GSR_TextureGrad) ? "Grad"  : "") << (offset ? "Offset" : "") << "(";
 			this->ToOperands(out, *insn.ops[2], oit, false);
 			out << "_";
@@ -4808,8 +5078,20 @@ void GLSLGen::ToInstruction(std::ostream& out, ShaderInstruction const & insn) c
 						BOOST_ASSERT(false);
 						break;
 					}
+					oot = this->FindTextureReturnType(*insn.ops[2]);
 					this->ToOperands(out, *insn.ops[0], oot | (oot << 8));
-					out << " = vec4(texelFetch";
+					out << " = ";
+					switch (oot)
+					{
+					case SIT_UInt:
+					case SIT_Int:
+						out << "i";
+						break;
+
+					default:
+						break;
+					}
+					out << "vec4(texelFetch";
 					if (lod)
 					{
 						out << "Offset";
@@ -4922,8 +5204,20 @@ void GLSLGen::ToInstruction(std::ostream& out, ShaderInstruction const & insn) c
 				BOOST_ASSERT(false);
 				break;
 			}
+			oot = this->FindTextureReturnType(*insn.ops[2]);
 			this->ToOperands(out, *insn.ops[0], oot | (oot << 8));
-			out << " = vec4(textureGather";
+			out << " = ";
+			switch (oot)
+			{
+			case SIT_UInt:
+			case SIT_Int:
+				out << "i";
+				break;
+
+			default:
+				break;
+			}
+			out << "vec4(textureGather";
 			if (offset)
 			{
 				out << "Offset(";
@@ -4984,8 +5278,20 @@ void GLSLGen::ToInstruction(std::ostream& out, ShaderInstruction const & insn) c
 				BOOST_ASSERT(false);
 				break;
 			}
+			oot = this->FindTextureReturnType(*insn.ops[2]);
 			this->ToOperands(out, *insn.ops[0], oot | (oot << 8));
-			out << " = vec4(textureGather";
+			out << " = ";
+			switch (oot)
+			{
+			case SIT_UInt:
+			case SIT_Int:
+				out << "i";
+				break;
+
+			default:
+				break;
+			}
+			out << "vec4(textureGather";
 			if (offset)
 			{
 				out << "Offset(";
@@ -5035,8 +5341,20 @@ void GLSLGen::ToInstruction(std::ostream& out, ShaderInstruction const & insn) c
 				BOOST_ASSERT(false);
 				break;
 			}
+			oot = this->FindTextureReturnType(*insn.ops[2]);
 			this->ToOperands(out, *insn.ops[0], oot | (oot << 8));
-			out << " = vec4(textureGatherOffset(";
+			out << " = ";
+			switch (oot)
+			{
+			case SIT_UInt:
+			case SIT_Int:
+				out << "i";
+				break;
+
+			default:
+				break;
+			}
+			out << "vec4(textureGatherOffset(";
 			this->ToOperands(out, *insn.ops[3], oit, false);
 			out << "_";
 			this->ToOperands(out, *insn.ops[4], oit, false);
@@ -5076,8 +5394,20 @@ void GLSLGen::ToInstruction(std::ostream& out, ShaderInstruction const & insn) c
 				BOOST_ASSERT(false);
 				break;
 			}
+			oot = this->FindTextureReturnType(*insn.ops[2]);
 			this->ToOperands(out, *insn.ops[0], oot | (oot << 8));
-			out << " = vec4(textureGatherOffset(";
+			out << " = ";
+			switch (oot)
+			{
+			case SIT_UInt:
+			case SIT_Int:
+				out << "i";
+				break;
+
+			default:
+				break;
+			}
+			out << "vec4(textureGatherOffset(";
 			this->ToOperands(out, *insn.ops[3], oit, false);
 			out << "_";
 			this->ToOperands(out, *insn.ops[4], oit, false);
@@ -6050,11 +6380,20 @@ void GLSLGen::ToOperandName(std::ostream& out, ShaderOperand const & op, ShaderI
 			}
 			else if (0 == strcmp(param_desc.semantic_name, "SV_SampleIndex"))
 			{
+				*need_comps = false;
 				*need_idx = false;
-				out << "gl_SampleID";
+				if (glsl_rules_ & GSR_ExplicitMultiSample)
+				{
+					out << "gl_SampleID";
+				}
+				else
+				{
+					out << "0";
+				}
 			}
 			else if (0 == strcmp(param_desc.semantic_name, "SV_PrimitiveID"))
 			{
+				*need_comps = false;
 				*need_idx = false;
 				out << "gl_PrimitiveID";
 			}
@@ -8086,4 +8425,36 @@ void GLSLGen::ToCopyToInterShaderPatchConstantRegisters(std::ostream& out)const
 			out << ";\n";
 		}
 	}
+}
+
+ShaderImmType GLSLGen::FindTextureReturnType(ShaderOperand const & op) const
+{
+	ShaderImmType ret;
+	DXBCInputBindDesc const & desc = this->GetResourceDesc(SIT_TEXTURE, static_cast<uint32_t>(op.indices[0].disp));
+	switch (desc.return_type)
+	{
+	case SRRT_UINT:
+		if (glsl_rules_ & GSR_UIntType)
+		{
+			ret = SIT_UInt;
+		}
+		else
+		{
+			ret = SIT_Int;
+		}
+		break;
+
+	case SRRT_SINT:
+		ret = SIT_Int;
+		break;
+
+	case SRRT_DOUBLE:
+		ret = SIT_Double;
+		break;
+
+	default:
+		ret = SIT_Float;
+		break;
+	}
+	return ret;
 }

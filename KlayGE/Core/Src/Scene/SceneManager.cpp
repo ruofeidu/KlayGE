@@ -48,7 +48,6 @@
 #include <KlayGE/Renderable.hpp>
 #include <KlayGE/RenderEffect.hpp>
 #include <KlayGE/Light.hpp>
-#include <KlayGE/SceneObject.hpp>
 #include <KlayGE/Input.hpp>
 #include <KlayGE/InputFactory.hpp>
 #include <KlayGE/FrameBuffer.hpp>
@@ -66,6 +65,8 @@ namespace KlayGE
 	/////////////////////////////////////////////////////////////////////////////////
 	SceneManager::SceneManager()
 		: frustum_(nullptr),
+			scene_root_(L"SceenRoot", SceneNode::SOA_Cullable),
+			overlay_root_(L"OverlayRoot", SceneNode::SOA_Cullable | SceneNode::SOA_Overlay),
 			small_obj_threshold_(0),
 			update_elapse_(1.0f / 60),
 			num_objects_rendered_(0), num_renderables_rendered_(0),
@@ -73,6 +74,8 @@ namespace KlayGE
 			num_draw_calls_(0), num_dispatch_calls_(0),
 			quit_(false), deferred_mode_(false)
 	{
+		scene_root_.VisibleMark(BO_Partial);
+		overlay_root_.VisibleMark(BO_Partial);
 	}
 
 	// 析构函数
@@ -80,10 +83,11 @@ namespace KlayGE
 	SceneManager::~SceneManager()
 	{
 		quit_ = true;
-		(*update_thread_)();
+		if (update_thread_)
+		{
+			(*update_thread_)();
+		}
 
-		this->ClearLight();
-		this->ClearCamera();
 		this->ClearObject();
 	}
 
@@ -125,27 +129,23 @@ namespace KlayGE
 			}
 		}
 
-		for (auto const & obj : scene_objs_)
+		for (auto* sn : all_scene_nodes_)
 		{
-			auto so = obj.get();
+			auto& node = *sn;
 			BoundOverlap visible;
-			uint32_t const attr = so->Attrib();
-			if (so->Visible())
+			if (node.Visible() && node.Updated())
 			{
-				visible = this->VisibleTestFromParent(so, camera.ForwardVec(), camera.EyePos(), view_proj);
+				uint32_t const attr = node.Attrib();
+
+				visible = this->VisibleTestFromParent(node, camera.ForwardVec(), camera.EyePos(), view_proj);
 				if (BO_Partial == visible)
 				{
-					if (attr & SceneObject::SOA_Moveable)
-					{
-						so->UpdateAbsModelMatrix();
-					}
-
-					if (attr & SceneObject::SOA_Cullable)
+					if (attr & SceneNode::SOA_Cullable)
 					{
 						if (small_obj_threshold_ > 0)
 						{
-							visible = ((MathLib::ortho_area(camera.ForwardVec(), so->PosBoundWS()) > small_obj_threshold_)
-								&& (MathLib::perspective_area(camera.EyePos(), view_proj, so->PosBoundWS()) > small_obj_threshold_))
+							visible = ((MathLib::ortho_area(camera.ForwardVec(), node.PosBoundWS()) > small_obj_threshold_)
+								&& (MathLib::perspective_area(camera.EyePos(), view_proj, node.PosBoundWS()) > small_obj_threshold_))
 								? BO_Yes : BO_No;
 						}
 						else
@@ -158,10 +158,10 @@ namespace KlayGE
 						visible = BO_Yes;
 					}
 
-					if (!camera.OmniDirectionalMode() && (attr & SceneObject::SOA_Cullable)
+					if (!camera.OmniDirectionalMode() && (attr & SceneNode::SOA_Cullable)
 						&& (BO_Yes == visible))
 					{
-						visible = this->AABBVisible(so->PosBoundWS());
+						visible = this->AABBVisible(node.PosBoundWS());
 					}
 				}
 			}
@@ -170,137 +170,38 @@ namespace KlayGE
 				visible = BO_No;
 			}
 
-			so->VisibleMark(visible);
+			node.VisibleMark(visible);
 		}
 	}
 
-	void SceneManager::AddCamera(CameraPtr const & camera)
+	uint32_t SceneManager::NumFrameCameras() const
 	{
-		cameras_.push_back(camera);
-	}
-	
-	void SceneManager::DelCamera(CameraPtr const & camera)
-	{
-		auto iter = std::find(cameras_.begin(), cameras_.end(), camera);
-		cameras_.erase(iter);
+		return static_cast<uint32_t>(frame_cameras_.size());
 	}
 
-	std::vector<CameraPtr>::iterator SceneManager::DelCamera(std::vector<CameraPtr>::iterator iter)
+	Camera* SceneManager::GetFrameCamera(uint32_t index)
 	{
-		std::lock_guard<std::mutex> lock(update_mutex_);
-		return cameras_.erase(iter);
+		return frame_cameras_[index].get();
 	}
 
-	uint32_t SceneManager::NumCameras() const
+	Camera const* SceneManager::GetFrameCamera(uint32_t index) const
 	{
-		return static_cast<uint32_t>(cameras_.size());
+		return frame_cameras_[index].get();
 	}
 
-	CameraPtr& SceneManager::GetCamera(uint32_t index)
+	uint32_t SceneManager::NumFrameLights() const
 	{
-		return cameras_[index];
+		return static_cast<uint32_t>(frame_lights_.size());
 	}
 
-	CameraPtr const & SceneManager::GetCamera(uint32_t index) const
+	LightSource* SceneManager::GetFrameLight(uint32_t index)
 	{
-		return cameras_[index];
+		return frame_lights_[index].get();
 	}
 
-	void SceneManager::AddLight(LightSourcePtr const & light)
+	LightSource const* SceneManager::GetFrameLight(uint32_t index) const
 	{
-		lights_.push_back(light);
-	}
-	
-	void SceneManager::DelLight(LightSourcePtr const & light)
-	{
-		auto iter = std::find(lights_.begin(), lights_.end(), light);
-		lights_.erase(iter);
-	}
-
-	std::vector<LightSourcePtr>::iterator SceneManager::DelLight(std::vector<LightSourcePtr>::iterator iter)
-	{
-		std::lock_guard<std::mutex> lock(update_mutex_);
-		return lights_.erase(iter);
-	}
-
-	uint32_t SceneManager::NumLights() const
-	{
-		return static_cast<uint32_t>(lights_.size());
-	}
-
-	LightSourcePtr& SceneManager::GetLight(uint32_t index)
-	{
-		return lights_[index];
-	}
-
-	LightSourcePtr const & SceneManager::GetLight(uint32_t index) const
-	{
-		return lights_[index];
-	}
-
-	// 加入渲染物体
-	/////////////////////////////////////////////////////////////////////////////////
-	void SceneManager::AddSceneObject(SceneObjectPtr const & obj)
-	{
-		std::lock_guard<std::mutex> lock(update_mutex_);
-		this->AddSceneObjectLocked(obj);
-	}
-
-	void SceneManager::AddSceneObjectLocked(SceneObjectPtr const & obj)
-	{
-		App3DFramework& app = Context::Instance().AppInstance();
-		float const app_time = app.AppTime();
-		float const frame_time = app.FrameTime();
-		obj->MainThreadUpdate(app_time, frame_time);
-
-		uint32_t const attr = obj->Attrib();
-		if (attr & SceneObject::SOA_Overlay)
-		{
-			overlay_scene_objs_.push_back(obj);
-		}
-		else
-		{
-			if ((attr & SceneObject::SOA_Cullable)
-				&& !(attr & SceneObject::SOA_Moveable))
-			{
-				obj->UpdateAbsModelMatrix();
-			}
-
-			scene_objs_.push_back(obj);
-			this->OnAddSceneObject(obj);
-		}
-	}
-
-	// 删除渲染物体
-	/////////////////////////////////////////////////////////////////////////////////
-	void SceneManager::DelSceneObject(SceneObjectPtr const & obj)
-	{
-		std::lock_guard<std::mutex> lock(update_mutex_);
-		this->DelSceneObjectLocked(obj);
-	}
-
-	void SceneManager::DelSceneObjectLocked(SceneObjectPtr const & obj)
-	{
-		for (auto iter = scene_objs_.begin(); iter != scene_objs_.end(); ++ iter)
-		{
-			if (*iter == obj)
-			{
-				this->DelSceneObjectLocked(iter);
-				break;
-			}
-		}
-	}
-
-	std::vector<SceneObjectPtr>::iterator SceneManager::DelSceneObject(std::vector<SceneObjectPtr>::iterator iter)
-	{
-		std::lock_guard<std::mutex> lock(update_mutex_);
-		return this->DelSceneObjectLocked(iter);
-	}
-
-	std::vector<SceneObjectPtr>::iterator SceneManager::DelSceneObjectLocked(std::vector<SceneObjectPtr>::iterator iter)
-	{
-		this->OnDelSceneObject(iter);
-		return scene_objs_.erase(iter);
+		return frame_lights_[index].get();
 	}
 
 	// 加入渲染队列
@@ -345,10 +246,12 @@ namespace KlayGE
 					}
 				}
 
-				add &= (deferred_mode_ && !obj->SimpleForward() && !(urt_ & App3DFramework::URV_SimpleForwardOnly))
+				add &= (deferred_mode_ && !obj->SimpleForward() && !(urt_ & App3DFramework::URV_SimpleForwardOnly)
+						&& !obj->VDM() && !(urt_ & App3DFramework::URV_VDMOnly))
 					|| !deferred_mode_;
 
 				add |= (deferred_mode_ && obj->SimpleForward() && (urt_ & App3DFramework::URV_SimpleForwardOnly));
+				add |= (deferred_mode_ && obj->VDM() && (urt_ & App3DFramework::URV_VDMOnly));
 			}
 
 			if (add)
@@ -421,36 +324,11 @@ namespace KlayGE
 		}
 	}
 
-	uint32_t SceneManager::NumSceneObjects() const
-	{
-		return static_cast<uint32_t>(scene_objs_.size());
-	}
-
-	SceneObjectPtr& SceneManager::GetSceneObject(uint32_t index)
-	{
-		return scene_objs_[index];
-	}
-
-	SceneObjectPtr const & SceneManager::GetSceneObject(uint32_t index) const
-	{
-		return scene_objs_[index];
-	}
-
-	void SceneManager::ClearCamera()
-	{
-		cameras_.resize(0);
-	}
-
-	void SceneManager::ClearLight()
-	{
-		lights_.resize(0);
-	}
-
 	void SceneManager::ClearObject()
 	{
 		std::lock_guard<std::mutex> lock(update_mutex_);
-		scene_objs_.resize(0);
-		overlay_scene_objs_.resize(0);
+		scene_root_.ClearChildren();
+		overlay_root_.ClearChildren();
 	}
 
 	// 更新场景管理器
@@ -466,45 +344,40 @@ namespace KlayGE
 		RenderEngine& re = Context::Instance().RenderFactoryInstance().RenderEngineInstance();
 		re.BeginFrame();
 
-		this->FlushScene();
-
 		if (!update_thread_ && !quit_)
 		{
 			update_thread_ = MakeUniquePtr<joiner<void>>(Context::Instance().ThreadPool()(
-				std::bind(&SceneManager::UpdateThreadFunc, this)));
+				[this] { this->UpdateThreadFunc(); }));
 		}
 
-		std::vector<SceneObjectPtr> added_scene_objs;
 		{
 			std::lock_guard<std::mutex> lock(update_mutex_);
 
-			for (auto const & scene_obj : scene_objs_)
-			{
-				if (scene_obj->MainThreadUpdate(app_time, frame_time))
-				{
-					added_scene_objs.push_back(scene_obj);
-				}
-			}
+			scene_root_.Traverse([this, app_time, frame_time](SceneNode& node) {
+				node.MainThreadUpdate(app_time, frame_time);
+				node.UpdateTransforms();
 
-			overlay_scene_objs_.clear();
-			for (auto iter = lights_.begin(); iter != lights_.end();)
-			{
-				if ((*iter)->Attrib() & LightSource::LSA_Temporary)
+				if (node.Visible())
 				{
-					iter = this->DelLight(iter);
-				}
-				else
-				{
-					++ iter;
-				}
-			}
+					node.ForEachComponentOfType<Camera>([this](Camera& camera) {
+						frame_cameras_.push_back(camera.shared_from_this());
+					});
 
-			for (auto const & scene_obj : added_scene_objs)
-			{
-				scene_obj->OnAttachRenderable(true);
-				this->OnAddSceneObject(scene_obj);
-			}
+					node.ForEachComponentOfType<LightSource>([this](LightSource& light) {
+						frame_lights_.push_back(light.shared_from_this());
+					});
+				}
+
+				return true;
+			});
+			scene_root_.UpdatePosBoundSubtree();
+
+			overlay_root_.ClearChildren();
 		}
+
+		nodes_updated_ = true;
+
+		this->FlushScene();
 
 		FrameBuffer& fb = *re.ScreenFrameBuffer();
 		fb.SwapBuffers();
@@ -512,22 +385,14 @@ namespace KlayGE
 		InputEngine& ie = Context::Instance().InputFactoryInstance().InputEngineInstance();
 		ie.Update();
 
-		for (auto const & camera : cameras_)
-		{
-			camera->Update(app_time, frame_time);
-		}
-
-		for (auto const & light : lights_)
-		{
-			if (light->Enabled())
-			{
-				light->Update(app_time, frame_time);
-			}
-		}
+		frame_cameras_.clear();
+		frame_lights_.clear();
 
 		fb.WaitOnSwapBuffers();
 
 		re.EndFrame();
+
+		nodes_updated_ = false;
 	}
 
 	// 把渲染队列中的物体渲染出来
@@ -548,21 +413,45 @@ namespace KlayGE
 		num_primitives_rendered_ = 0;
 		num_vertices_rendered_ = 0;
 
-		Camera& camera = app.ActiveCamera();
-		auto const & scene_objs = (urt & App3DFramework::URV_Overlay) ? overlay_scene_objs_ : scene_objs_;
+		scene_root_.Traverse([this](SceneNode& node)
+			{
+				all_scene_nodes_.push_back(&node);
+				return true;
+			});
+		overlay_root_.Traverse([this](SceneNode& node)
+			{
+				all_overlay_nodes_.push_back(&node);
+				return true;
+			});
 
-		for (auto const & scene_obj : scene_objs)
+		Camera& camera = app.ActiveCamera();
+		auto& scene_nodes = (urt & App3DFramework::URV_Overlay) ? all_overlay_nodes_ : all_scene_nodes_;
+
+		for (auto* node : scene_nodes)
 		{
-			scene_obj->VisibleMark(BO_No);
+			node->VisibleMark(BO_No);
+		}
+		if (!(urt & App3DFramework::URV_Overlay))
+		{
+			scene_root_.Traverse([](SceneNode& node)
+				{
+					uint32_t const attr = node.Attrib();
+					if ((node.Parent() == nullptr)
+						|| (node.Visible() && (!(attr & SceneNode::SOA_Cullable) || (attr & SceneNode::SOA_Moveable))))
+					{
+						node.VisibleMark(BO_Partial);
+					}
+					return node.Visible();
+				});
 		}
 		if (urt & App3DFramework::URV_NeedFlush)
 		{
 			frustum_ = &camera.ViewFrustum();
 
-			std::vector<uint32_t> visible_list((scene_objs.size() + 31) / 32, 0);
-			for (size_t i = 0; i < scene_objs.size(); ++ i)
+			std::vector<uint32_t> visible_list((scene_nodes.size() + 31) / 32, 0);
+			for (size_t i = 0; i < scene_nodes.size(); ++ i)
 			{
-				if (scene_objs[i]->Visible())
+				if (scene_nodes[i]->Visible())
 				{
 					visible_list[i / 32] |= (1UL << (i & 31));
 				}
@@ -577,60 +466,57 @@ namespace KlayGE
 			{
 				this->ClipScene();
 
-				std::shared_ptr<std::vector<BoundOverlap>> visible_marks
-					= MakeSharedPtr<std::vector<BoundOverlap>>(scene_objs.size());
-				for (size_t i = 0; i < scene_objs.size(); ++ i)
+				auto visible_marks = MakeUniquePtr<BoundOverlap[]>(scene_nodes.size());
+				for (size_t i = 0; i < scene_nodes.size(); ++ i)
 				{
-					(*visible_marks)[i] = scene_objs[i]->VisibleMark();
+					visible_marks[i] = scene_nodes[i]->VisibleMark();
 				}
 
-				visible_marks_map_.emplace(seed, visible_marks);
+				visible_marks_map_.emplace(seed, std::move(visible_marks));
 			}
 			else
 			{
-				for (size_t i = 0; i < scene_objs.size(); ++ i)
+				for (size_t i = 0; i < scene_nodes.size(); ++ i)
 				{
-					scene_objs[i]->VisibleMark((*vmiter->second)[i]);
+					scene_nodes[i]->VisibleMark(vmiter->second[i]);
 				}
 			}
 		}
 		if (urt & App3DFramework::URV_Overlay)
 		{
-			for (auto const & scene_obj : scene_objs)
+			for (auto const & scene_node : scene_nodes)
 			{
-				scene_obj->MainThreadUpdate(app_time, frame_time);
-				scene_obj->VisibleMark(scene_obj->Visible() ? BO_Yes : BO_No);
+				scene_node->MainThreadUpdate(app_time, frame_time);
+				scene_node->VisibleMark(scene_node->Visible() ? BO_Yes : BO_No);
 			}
 		}
 
-		for (auto const & obj : scene_objs)
+		for (auto* node : scene_nodes)
 		{
-			auto so = obj.get();
-			if ((so->VisibleMark() != BO_No) && (0 == so->NumChildren()))
+			if (node->VisibleMark() != BO_No)
 			{
-				auto renderable = so->GetRenderable().get();
-				if (renderable)
-				{
-					renderable->ClearInstances();
-				}
+				node->ForEachComponentOfType<RenderableComponent>(
+					[](RenderableComponent& renderable_comp) { renderable_comp.BoundRenderable().ClearInstances(); });
 			}
 		}
 
-		for (auto const & obj : scene_objs)
+		for (auto* node : scene_nodes)
 		{
-			auto so = obj.get();
-			if ((so->VisibleMark() != BO_No) && (0 == so->NumChildren()))
+			if (node->VisibleMark() != BO_No)
 			{
-				auto renderable = so->GetRenderable().get();
-				if (renderable)
-				{
-					if (0 == renderable->NumInstances())
+				node->ForEachComponentOfType<RenderableComponent>([node](RenderableComponent& renderable_comp) {
+					auto& renderable = renderable_comp.BoundRenderable();
+					if (renderable_comp.Enabled() && (renderable.GetRenderTechnique() != nullptr))
 					{
-						renderable->AddToRenderQueue();
+						if (0 == renderable.NumInstances())
+						{
+							renderable.AddToRenderQueue();
+						}
+						renderable.AddInstance(node);
 					}
-					renderable->AddInstance(so);
-					++ num_objects_rendered_;
-				}
+				});
+
+				++ num_objects_rendered_;
 			}
 		}
 
@@ -658,7 +544,7 @@ namespace KlayGE
 					float md = 1e10f;
 					for (uint32_t i = 0; i < num; ++ i)
 					{
-						float4x4 const & mat = renderable->GetInstance(i)->ModelMatrix();
+						float4x4 const & mat = renderable->GetInstance(i)->TransformToWorld();
 						float4 const zvec(MathLib::dot(mat.Row(0), view_mat_z),
 							MathLib::dot(mat.Row(1), view_mat_z), MathLib::dot(mat.Row(2), view_mat_z),
 							MathLib::dot(mat.Row(3), view_mat_z));
@@ -692,6 +578,9 @@ namespace KlayGE
 
 		num_primitives_rendered_ += re.NumPrimitivesJustRendered();
 		num_vertices_rendered_ += re.NumVerticesJustRendered();
+
+		all_scene_nodes_.clear();
+		all_overlay_nodes_.clear();
 
 		urt_ = 0;
 	}
@@ -763,14 +652,14 @@ namespace KlayGE
 
 		re.PostProcess((urt & App3DFramework::URV_SkipPostProcess) != 0);
 
-		if (re.Stereo() != STM_None)
+		if ((re.Stereo() != STM_None) || (re.DisplayOutput() != DOM_sRGB))
 		{
 			re.BindFrameBuffer(re.OverlayFrameBuffer());
 			re.CurFrameBuffer()->Clear(FrameBuffer::CBM_Color | FrameBuffer::CBM_Depth, Color(0, 0, 0, 0), 1.0f, 0);
 		}
 		this->Flush(App3DFramework::URV_Overlay);
 
-		re.Stereoscopic();
+		re.ConvertToDisplay();
 
 		num_draw_calls_ = re.NumDrawsJustCalled();
 		num_dispatch_calls_ = re.NumDispatchesJustCalled();
@@ -793,14 +682,12 @@ namespace KlayGE
 				{
 					std::lock_guard<std::mutex> lock(update_mutex_);
 
-					for (auto const & scene_obj : scene_objs_)
-					{
-						scene_obj->SubThreadUpdate(app_time, frame_time);
-					}
-					for (auto const & scene_obj : overlay_scene_objs_)
-					{
-						scene_obj->SubThreadUpdate(app_time, frame_time);
-					}
+					auto updater = [app_time, frame_time](SceneNode& node) {
+						node.SubThreadUpdate(app_time, frame_time);
+						return true;
+					};
+					scene_root_.Traverse(updater);
+					overlay_root_.Traverse(updater);
 				}
 
 				if (frame_time < update_elapse_)
@@ -811,31 +698,26 @@ namespace KlayGE
 		}
 	}
 
-	BoundOverlap SceneManager::VisibleTestFromParent(SceneObject* obj, float3 const & view_dir, float3 const & eye_pos,
+	BoundOverlap SceneManager::VisibleTestFromParent(SceneNode const & node, float3 const & view_dir, float3 const & eye_pos,
 		float4x4 const & view_proj)
 	{
 		BoundOverlap visible;
-		if (obj->Parent())
+		if (node.Parent())
 		{
-			BoundOverlap parent_bo = obj->Parent()->VisibleMark();
+			BoundOverlap const parent_bo = node.Parent()->VisibleMark();
 			if (BO_No == parent_bo)
 			{
 				visible = BO_No;
 			}
 			else
 			{
-				uint32_t const attr = obj->Attrib();
-				if (attr & SceneObject::SOA_Moveable)
-				{
-					obj->UpdateAbsModelMatrix();
-				}
-
-				if (attr & SceneObject::SOA_Cullable)
+				uint32_t const attr = node.Attrib();
+				if (attr & SceneNode::SOA_Cullable)
 				{
 					if (small_obj_threshold_ > 0)
 					{
-						visible = ((MathLib::ortho_area(view_dir, obj->PosBoundWS()) > small_obj_threshold_)
-							&& (MathLib::perspective_area(eye_pos, view_proj, obj->PosBoundWS()) > small_obj_threshold_))
+						visible = ((MathLib::ortho_area(view_dir, node.PosBoundWS()) > small_obj_threshold_)
+							&& (MathLib::perspective_area(eye_pos, view_proj, node.PosBoundWS()) > small_obj_threshold_))
 							? parent_bo : BO_No;
 					}
 					else

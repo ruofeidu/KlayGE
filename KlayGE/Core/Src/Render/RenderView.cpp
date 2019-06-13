@@ -11,25 +11,15 @@
 //////////////////////////////////////////////////////////////////////////////////
 
 #include <KlayGE/KlayGE.hpp>
-#include <KFL/Util.hpp>
 #include <KlayGE/RenderView.hpp>
 
 namespace KlayGE
 {
-	void RenderView::OnBind(FrameBuffer& /*fb*/, uint32_t /*att*/)
-	{
-	}
-	
-	void RenderView::OnUnbind(FrameBuffer& /*fb*/, uint32_t /*att*/)
-	{
-	}
+	ShaderResourceView::~ShaderResourceView() = default;
 
+	RenderTargetView::~RenderTargetView() = default;
 
-	void UnorderedAccessView::OnBind(FrameBuffer& /*fb*/, uint32_t /*att*/)
-	{
-	}
-	
-	void UnorderedAccessView::OnUnbind(FrameBuffer& /*fb*/, uint32_t /*att*/)
-	{
-	}
+	DepthStencilView::~DepthStencilView() = default;
+
+	UnorderedAccessView::~UnorderedAccessView() = default;
 }

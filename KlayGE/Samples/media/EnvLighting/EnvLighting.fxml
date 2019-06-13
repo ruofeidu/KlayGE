@@ -4,20 +4,13 @@
 	<include name="Lighting.fxml"/>
 	<include name="util.fxml"/>
 	<include name="Quaternion.fxml"/>
-
-	<cbuffer name="per_object">
-		<parameter type="float3" name="pos_center"/>
-		<parameter type="float3" name="pos_extent"/>
-		<parameter type="float2" name="tc_center"/>
-		<parameter type="float2" name="tc_extent"/>
-	</cbuffer>
+	<include name="Mesh.fxml"/>
 
 	<cbuffer name="per_frame">
 		<parameter type="float4x4" name="model"/>
 		<parameter type="float4x4" name="mvp"/>
 		<parameter type="float3" name="eye_pos"/>
 		<parameter type="int2" name="diff_spec_mip"/>
-		<parameter type="float" name="mip_bias"/>
 		<parameter type="float3" name="diffuse"/>
 		<parameter type="float3" name="specular"/>
 		<parameter type="float" name="glossiness"/>
@@ -33,6 +26,7 @@
 	</parameter>
 
 	<parameter type="texture2D" name="integrated_brdf_tex"/>
+	<parameter type="texture2D" name="color_map"/>
 	<parameter type="sampler" name="bilinear_sampler">
 		<state name="filtering" value="min_mag_linear_mip_point"/>
 		<state name="address_u" value="clamp"/>
@@ -44,8 +38,8 @@
 		<![CDATA[
 float3 PrefilteredDiffuseIBL(float3 c_diff, float3 normal)
 {
-	float3 prefiltered_clr = decode_hdr_yc(TexCubeSampleLevel(skybox_Ycube_tex, skybox_sampler, normal, diff_spec_mip.x, 0).r,
-		TexCubeSampleLevel(skybox_Ccube_tex, skybox_sampler, normal, diff_spec_mip.x, 0)).xyz;
+	float3 prefiltered_clr = decode_hdr_yc(skybox_Ycube_tex.SampleLevel(skybox_sampler, normal, diff_spec_mip.x).r,
+		skybox_Ccube_tex.SampleLevel(skybox_sampler, normal, diff_spec_mip.x)).xyz;
 	return CalcEnvDiffuse(prefiltered_clr, c_diff);
 }
 
@@ -54,8 +48,8 @@ float3 PrefilteredSpecularIBL(float3 c_spec, float glossiness, float3 normal, fl
 	float mip = CalcPrefilteredEnvMip(glossiness, diff_spec_mip.y);
 	float shininess = Glossiness2Shininess(glossiness);
 	float3 r = CalcPrefilteredEnvVec(normal, view);
-	float3 prefiltered_clr = decode_hdr_yc(TexCubeSampleLevel(skybox_Ycube_tex, skybox_sampler, r, mip, mip_bias).r,
-		TexCubeSampleLevel(skybox_Ccube_tex, skybox_sampler, r, mip, mip_bias)).xyz;
+	float3 prefiltered_clr = decode_hdr_yc(skybox_Ycube_tex.SampleLevel(skybox_sampler, r, mip).r,
+		skybox_Ccube_tex.SampleLevel(skybox_sampler, r, mip)).xyz;
 	return prefiltered_clr * saturate(CalcBRDFShading(0, specular, shininess, r, normal, normal));
 }
 
@@ -64,8 +58,8 @@ float3 PBPrefilteredSpecularIBL(float3 c_spec, float glossiness, float3 normal, 
 	float mip = CalcPrefilteredEnvMip(glossiness, diff_spec_mip.y);
 	float n_dot_v = saturate(dot(normal, view));
 	float3 r = CalcPrefilteredEnvVec(normal, view);	
-	float3 prefiltered_clr = decode_hdr_yc(TexCubeSampleLevel(skybox_Ycube_tex, skybox_sampler, r, mip, mip_bias).r,
-		TexCubeSampleLevel(skybox_Ccube_tex, skybox_sampler, r, mip, mip_bias)).xyz;
+	float3 prefiltered_clr = decode_hdr_yc(skybox_Ycube_tex.SampleLevel(skybox_sampler, r, mip).r,
+		skybox_Ccube_tex.SampleLevel(skybox_sampler, r, mip)).xyz;
 	float2 env_brdf = integrated_brdf_tex.Sample(bilinear_sampler, float2(n_dot_v, glossiness)).xy;
 	return prefiltered_clr * (c_spec * env_brdf.x + env_brdf.y / 100);
 }
@@ -74,8 +68,8 @@ float3 PBFittingPrefilteredSpecularIBL(float3 c_spec, float glossiness, float3 n
 {
 	float mip = CalcPrefilteredEnvMip(glossiness, diff_spec_mip.y);
 	float3 r = CalcPrefilteredEnvVec(normal, view);
-	float3 prefiltered_clr = decode_hdr_yc(TexCubeSampleLevel(skybox_Ycube_tex, skybox_sampler, r, mip, mip_bias).r,
-		TexCubeSampleLevel(skybox_Ccube_tex, skybox_sampler, r, mip, mip_bias)).xyz;
+	float3 prefiltered_clr = decode_hdr_yc(skybox_Ycube_tex.SampleLevel(skybox_sampler, r, mip).r,
+		skybox_Ccube_tex.SampleLevel(skybox_sampler, r, mip)).xyz;
 	return CalcEnvSpecular(prefiltered_clr, c_spec, glossiness, normal, view);
 }
 
@@ -118,6 +112,16 @@ float4 PBFittingPrefilteredPS(float3 normal : TEXCOORD0, float3 incident : TEXCO
 
 	return float4(PrefilteredDiffuseIBL(diffuse, normal)
 		+ PBFittingPrefilteredSpecularIBL(specular, glossiness, normal, incident), 1);
+}
+
+float4 PBFittingErrorPS(float3 normal : TEXCOORD0, float3 incident : TEXCOORD1) : SV_Target
+{
+	float4 error = PBFittingPrefilteredPS(normal, incident) - PBPrefilteredPS(normal, incident);
+
+	const float3 RGB_TO_LUM = float3(0.2126f, 0.7152f, 0.0722f);
+	float lum = saturate(dot(error.rgb * 100, RGB_TO_LUM));
+
+	return color_map.SampleLevel(bilinear_sampler, float2(lum, 0.5f), 0);
 }
 		]]>
 	</shader>
@@ -345,6 +349,12 @@ float4 ApproximatePS(float3 normal : TEXCOORD0, float3 incident : TEXCOORD1) : S
 		<pass name="p0">
 			<state name="vertex_shader" value="GroundTruthVS()"/>
 			<state name="pixel_shader" value="PBFittingPrefilteredPS()"/>
+		</pass>
+	</technique>
+	<technique name="PBFittingError">
+		<pass name="p0">
+			<state name="vertex_shader" value="GroundTruthVS()"/>
+			<state name="pixel_shader" value="PBFittingErrorPS()"/>
 		</pass>
 	</technique>
 </effect>

@@ -53,23 +53,26 @@ namespace KlayGE
 
 		void BeginFrame() override;
 		void EndFrame() override;
-		void UpdateGPUTimestampsFrequency() override;
 
 		IDXGIFactory1* DXGIFactory1() const;
 		IDXGIFactory2* DXGIFactory2() const;
 		IDXGIFactory3* DXGIFactory3() const;
 		IDXGIFactory4* DXGIFactory4() const;
 		IDXGIFactory5* DXGIFactory5() const;
+		IDXGIFactory6* DXGIFactory6() const;
 		uint8_t DXGISubVer() const;
 
 		ID3D11Device* D3DDevice() const;
 		ID3D11Device1* D3DDevice1() const;
 		ID3D11Device2* D3DDevice2() const;
 		ID3D11Device3* D3DDevice3() const;
+		ID3D11Device4* D3DDevice4() const;
+		ID3D11Device5* D3DDevice5() const;
 		ID3D11DeviceContext* D3DDeviceImmContext() const;
 		ID3D11DeviceContext1* D3DDeviceImmContext1() const;
 		ID3D11DeviceContext2* D3DDeviceImmContext2() const;
 		ID3D11DeviceContext3* D3DDeviceImmContext3() const;
+		ID3D11DeviceContext4* D3DDeviceImmContext4() const;
 		uint8_t D3D11RuntimeSubVer() const;
 
 		D3D_FEATURE_LEVEL DeviceFeatureLevel() const;
@@ -82,39 +85,14 @@ namespace KlayGE
 
 		void ScissorRect(uint32_t x, uint32_t y, uint32_t width, uint32_t height);
 
-		virtual void GetCustomAttrib(std::string const & name, void* value) override;
+		void GetCustomAttrib(std::string_view name, void* value) const override;
 
 		bool FullScreen() const;
 		void FullScreen(bool fs);
 
-		char const * VertexShaderProfile() const
+		char const * DefaultShaderProfile(ShaderStage stage) const
 		{
-			return vs_profile_;
-		}
-		char const * PixelShaderProfile() const
-		{
-			return ps_profile_;
-		}
-		char const * GeometryShaderProfile() const
-		{
-			return gs_profile_;
-		}
-		char const * ComputeShaderProfile() const
-		{
-			return cs_profile_;
-		}
-		char const * HullShaderProfile() const
-		{
-			return hs_profile_;
-		}
-		char const * DomainShaderProfile() const
-		{
-			return ds_profile_;
-		}
-
-		double InvTimestampFreq() const
-		{
-			return inv_timestamp_freq_;
+			return shader_profiles_[static_cast<uint32_t>(stage)];
 		}
 
 		void RSSetState(ID3D11RasterizerState* ras);
@@ -126,9 +104,10 @@ namespace KlayGE
 		void CSSetShader(ID3D11ComputeShader* shader);
 		void HSSetShader(ID3D11HullShader* shader);
 		void DSSetShader(ID3D11DomainShader* shader);
-		void SetShaderResources(ShaderObject::ShaderType st, std::vector<std::tuple<void*, uint32_t, uint32_t>> const & srvsrcs, std::vector<ID3D11ShaderResourceView*> const & srvs);
-		void SetSamplers(ShaderObject::ShaderType st, std::vector<ID3D11SamplerState*> const & samplers);
-		void SetConstantBuffers(ShaderObject::ShaderType st, std::vector<ID3D11Buffer*> const & cbs);
+		void SetShaderResources(ShaderStage stage, std::vector<std::tuple<void*, uint32_t, uint32_t>> const& srvsrcs,
+			std::vector<ID3D11ShaderResourceView*> const& srvs);
+		void SetSamplers(ShaderStage stage, std::vector<ID3D11SamplerState*> const& samplers);
+		void SetConstantBuffers(ShaderStage stage, std::vector<ID3D11Buffer*> const& cbs);
 		void RSSetViewports(UINT NumViewports, D3D11_VIEWPORT const * pViewports);
 		void OMSetRenderTargets(UINT num_rtvs, ID3D11RenderTargetView* const * rtvs, ID3D11DepthStencilView* dsv);
 		void OMSetRenderTargetsAndUnorderedAccessViews(UINT num_rtvs, ID3D11RenderTargetView* const * rtvs,
@@ -165,16 +144,14 @@ namespace KlayGE
 
 		virtual void StereoscopicForLCDShutter(int32_t eye) override;
 
-		bool VertexFormatSupport(ElementFormat elem_fmt);
-		bool TextureFormatSupport(ElementFormat elem_fmt);
-		bool RenderTargetFormatSupport(ElementFormat elem_fmt, uint32_t sample_count, uint32_t sample_quality);
-
 		virtual void CheckConfig(RenderSettings& settings) override;
 
-	private:
 		D3D11AdapterList const & D3DAdapters() const;
-		D3D11AdapterPtr const & ActiveAdapter() const;
+		D3D11Adapter& ActiveAdapter() const;
 
+		static void CALLBACK OnDeviceLost(PTP_CALLBACK_INSTANCE instance, PVOID context, PTP_WAIT wait, TP_WAIT_RESULT wait_result);
+
+	private:
 		typedef HRESULT(WINAPI *CreateDXGIFactory1Func)(REFIID riid, void** ppFactory);
 		typedef HRESULT(WINAPI *D3D11CreateDeviceFunc)(IDXGIAdapter* pAdapter,
 			D3D_DRIVER_TYPE DriverType, HMODULE Software, UINT Flags,
@@ -192,16 +169,20 @@ namespace KlayGE
 		IDXGIFactory3Ptr gi_factory_3_;
 		IDXGIFactory4Ptr gi_factory_4_;
 		IDXGIFactory5Ptr gi_factory_5_;
+		IDXGIFactory6Ptr gi_factory_6_;
 		uint8_t dxgi_sub_ver_;
 		
 		ID3D11DevicePtr  d3d_device_;
 		ID3D11Device1Ptr d3d_device_1_;
 		ID3D11Device2Ptr d3d_device_2_;
 		ID3D11Device3Ptr d3d_device_3_;
+		ID3D11Device4Ptr d3d_device_4_;
+		ID3D11Device5Ptr d3d_device_5_;
 		ID3D11DeviceContextPtr  d3d_imm_ctx_;
 		ID3D11DeviceContext1Ptr d3d_imm_ctx_1_;
 		ID3D11DeviceContext2Ptr d3d_imm_ctx_2_;
 		ID3D11DeviceContext3Ptr d3d_imm_ctx_3_;
+		ID3D11DeviceContext4Ptr d3d_imm_ctx_4_;
 		uint8_t d3d_11_runtime_sub_ver_;
 
 		D3D_FEATURE_LEVEL d3d_feature_level_;
@@ -231,10 +212,10 @@ namespace KlayGE
 		std::vector<UINT> vb_offset_cache_;
 		ID3D11Buffer* ib_cache_;
 
-		std::array<std::vector<std::tuple<void*, uint32_t, uint32_t>>, ShaderObject::ST_NumShaderTypes> shader_srvsrc_cache_;
-		std::array<std::vector<ID3D11ShaderResourceView*>, ShaderObject::ST_NumShaderTypes> shader_srv_ptr_cache_;
-		std::array<std::vector<ID3D11SamplerState*>, ShaderObject::ST_NumShaderTypes> shader_sampler_ptr_cache_;
-		std::array<std::vector<ID3D11Buffer*>, ShaderObject::ST_NumShaderTypes> shader_cb_ptr_cache_;
+		std::array<std::vector<std::tuple<void*, uint32_t, uint32_t>>, NumShaderStages> shader_srvsrc_cache_;
+		std::array<std::vector<ID3D11ShaderResourceView*>, NumShaderStages> shader_srv_ptr_cache_;
+		std::array<std::vector<ID3D11SamplerState*>, NumShaderStages> shader_sampler_ptr_cache_;
+		std::array<std::vector<ID3D11Buffer*>, NumShaderStages> shader_cb_ptr_cache_;
 		std::vector<ID3D11UnorderedAccessView*> render_uav_ptr_cache_;
 		std::vector<uint32_t> render_uav_init_count_cache_;
 		std::vector<ID3D11UnorderedAccessView*> compute_uav_ptr_cache_;
@@ -242,12 +223,7 @@ namespace KlayGE
 		std::vector<ID3D11RenderTargetView*> rtv_ptr_cache_;
 		ID3D11DepthStencilView* dsv_ptr_cache_;
 
-		char const * vs_profile_;
-		char const * ps_profile_;
-		char const * gs_profile_;
-		char const * cs_profile_;
-		char const * hs_profile_;
-		char const * ds_profile_;
+		char const* shader_profiles_[NumShaderStages];
 
 		enum StereoMethod
 		{
@@ -261,12 +237,9 @@ namespace KlayGE
 		FrameBufferPtr stereo_nv_3d_vision_fb_;
 		TexturePtr stereo_nv_3d_vision_tex_;
 
-		std::vector<ElementFormat> vertex_format_;
-		std::vector<ElementFormat> texture_format_;
-		std::map<ElementFormat, std::vector<std::pair<uint32_t, uint32_t>>> rendertarget_format_;
-
-		ID3D11QueryPtr timestamp_disjoint_query_;
-		double inv_timestamp_freq_;
+		HANDLE device_lost_event_;
+		DWORD  device_lost_reg_cookie_;
+		PTP_WAIT thread_pool_wait_;
 	};
 }
 

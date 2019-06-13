@@ -55,7 +55,7 @@ namespace KlayGE
 			init_data.data = ptr;
 			init_data.row_pitch = width_ * sizeof(half) * 4;
 			init_data.slice_pitch = init_data.row_pitch;
-			lookup_i_wr_wi_x_tex_[i] = rf.MakeTexture2D(width_, 1, 1, 1, EF_ABGR16F, 1, 0, EAH_GPU_Read | EAH_Immutable, &init_data);
+			lookup_i_wr_wi_x_tex_[i] = rf.MakeTexture2D(width_, 1, 1, 1, EF_ABGR16F, 1, 0, EAH_GPU_Read | EAH_Immutable, init_data);
 			ptr += width_ * 4;
 		}
 
@@ -67,14 +67,14 @@ namespace KlayGE
 			init_data.data = ptr;
 			init_data.row_pitch = sizeof(half) * 4;
 			init_data.slice_pitch = init_data.row_pitch * height_;
-			lookup_i_wr_wi_y_tex_[i] = rf.MakeTexture2D(1, height_, 1, 1, EF_ABGR16F, 1, 0, EAH_GPU_Read | EAH_Immutable, &init_data);
+			lookup_i_wr_wi_y_tex_[i] = rf.MakeTexture2D(1, height_, 1, 1, EF_ABGR16F, 1, 0, EAH_GPU_Read | EAH_Immutable, init_data);
 			ptr += height_ * 4;
 		}
 
-		tmp_real_tex_[0] = rf.MakeTexture2D(width_, height_, 1, 1, EF_ABGR32F, 1, 0, EAH_GPU_Read | EAH_GPU_Write, nullptr);
-		tmp_real_tex_[1] = rf.MakeTexture2D(width_, height_, 1, 1, EF_ABGR32F, 1, 0, EAH_GPU_Read | EAH_GPU_Write, nullptr);
-		tmp_imag_tex_[0] = rf.MakeTexture2D(width_, height_, 1, 1, EF_ABGR32F, 1, 0, EAH_GPU_Read | EAH_GPU_Write, nullptr);
-		tmp_imag_tex_[1] = rf.MakeTexture2D(width_, height_, 1, 1, EF_ABGR32F, 1, 0, EAH_GPU_Read | EAH_GPU_Write, nullptr);
+		tmp_real_tex_[0] = rf.MakeTexture2D(width_, height_, 1, 1, EF_ABGR32F, 1, 0, EAH_GPU_Read | EAH_GPU_Write);
+		tmp_real_tex_[1] = rf.MakeTexture2D(width_, height_, 1, 1, EF_ABGR32F, 1, 0, EAH_GPU_Read | EAH_GPU_Write);
+		tmp_imag_tex_[0] = rf.MakeTexture2D(width_, height_, 1, 1, EF_ABGR32F, 1, 0, EAH_GPU_Read | EAH_GPU_Write);
+		tmp_imag_tex_[1] = rf.MakeTexture2D(width_, height_, 1, 1, EF_ABGR32F, 1, 0, EAH_GPU_Read | EAH_GPU_Write);
 
 		fft_x_pp_ = SyncLoadPostProcess("FFT.ppml", "fft_x");
 		fft_y_pp_ = SyncLoadPostProcess("FFT.ppml", "fft_y");
@@ -216,13 +216,19 @@ namespace KlayGE
 		RenderFactory& rf = Context::Instance().RenderFactoryInstance();
 
 		src_ = rf.MakeVertexBuffer(BU_Dynamic, EAH_GPU_Read | EAH_GPU_Unordered | EAH_GPU_Structured,
-			3 * width * height * sizeof(float) * 2, nullptr, EF_GR32F);
+			3 * width * height * sizeof(float2), nullptr, sizeof(float2));
+		src_srv_ = rf.MakeBufferSrv(src_, EF_GR32F);
+		src_uav_ = rf.MakeBufferUav(src_, EF_GR32F);
 
 		dst_ = rf.MakeVertexBuffer(BU_Dynamic, EAH_GPU_Read | EAH_GPU_Unordered | EAH_GPU_Structured,
-			3 * width * height * sizeof(float) * 2, nullptr, EF_GR32F);
+			3 * width * height * sizeof(float2), nullptr, sizeof(float2));
+		src_srv_ = rf.MakeBufferSrv(src_, EF_GR32F);
+		dst_uav_ = rf.MakeBufferUav(dst_, EF_GR32F);
 
 		tmp_buffer_ = rf.MakeVertexBuffer(BU_Dynamic, EAH_GPU_Read | EAH_GPU_Unordered | EAH_GPU_Structured,
-			3 * width * height * sizeof(float) * 2, nullptr, EF_GR32F);
+			3 * width * height * sizeof(float2), nullptr, sizeof(float2));
+		tmp_buffer_srv_ = rf.MakeBufferSrv(tmp_buffer_, EF_GR32F);
+		tmp_buffer_uav_ = rf.MakeBufferUav(tmp_buffer_, EF_GR32F);
 
 		quad_layout_ = rf.MakeRenderLayout();
 		quad_layout_->TopologyType(RenderLayout::TT_TriangleStrip);
@@ -235,7 +241,7 @@ namespace KlayGE
 			float2(+1, -1)
 		};
 		GraphicsBufferPtr quad_vb = rf.MakeVertexBuffer(BU_Static, EAH_GPU_Read | EAH_Immutable, sizeof(xyzs), xyzs);
-		quad_layout_->BindVertexStream(quad_vb, std::make_tuple(vertex_element(VEU_Position, 0, EF_GR32F)));
+		quad_layout_->BindVertexStream(quad_vb, VertexElement(VEU_Position, 0, EF_GR32F));
 
 		tex_fb_ = rf.MakeFrameBuffer();
 
@@ -247,7 +253,7 @@ namespace KlayGE
 		real_tex_ep_ = effect_->ParameterByName("real_tex");
 		imag_tex_ep_ = effect_->ParameterByName("imag_tex");
 
-		*(effect_->ParameterByName("input_buf")) = dst_;
+		*(effect_->ParameterByName("input_buf")) = dst_srv_;
 
 		*(effect_->ParameterByName("tex_width_height")) = uint2(width, height);
 		uint32_t n = width * height;
@@ -263,8 +269,8 @@ namespace KlayGE
 		RenderFactory& rf = Context::Instance().RenderFactoryInstance();
 		RenderEngine& re = rf.RenderEngineInstance();
 
-		tex_fb_->Attach(FrameBuffer::ATT_Color0, rf.Make2DRenderView(*out_real, 0, 1, 0));
-		tex_fb_->Attach(FrameBuffer::ATT_Color1, rf.Make2DRenderView(*out_imag, 0, 1, 0));
+		tex_fb_->Attach(FrameBuffer::Attachment::Color0, rf.Make2DRtv(out_real, 0, 1, 0));
+		tex_fb_->Attach(FrameBuffer::Attachment::Color1, rf.Make2DRtv(out_imag, 0, 1, 0));
 
 		FrameBufferPtr old_fb = re.CurFrameBuffer();
 		re.BindFrameBuffer(FrameBufferPtr());
@@ -289,9 +295,10 @@ namespace KlayGE
 		*(effect_->ParameterByName("istride")) = istride;
 		*(effect_->ParameterByName("istride3")) = uint2(0, istride3);
 		*(effect_->ParameterByName("phase_base")) = phase_base;
-		this->Radix008A(tmp_buffer_, src_, thread_count, istride, true);
+		this->Radix008A(tmp_buffer_uav_, src_srv_, thread_count, istride, true);
 
-		GraphicsBufferPtr buf[2] = { dst_, tmp_buffer_ };
+		ShaderResourceViewPtr srvs[2] = { dst_srv_, tmp_buffer_srv_ };
+		UnorderedAccessViewPtr uavs[2] = { dst_uav_, tmp_buffer_uav_ };
 		int index = 0;
 
 		uint32_t t = width_;
@@ -303,7 +310,7 @@ namespace KlayGE
 			*(effect_->ParameterByName("istride")) = istride;
 			*(effect_->ParameterByName("istride3")) = uint2(0, istride3);
 			*(effect_->ParameterByName("phase_base")) = phase_base;
-			this->Radix008A(buf[index], buf[!index], thread_count, istride, false);
+			this->Radix008A(uavs[index], srvs[!index], thread_count, istride, false);
 			index = !index;
 
 			t /= 8;
@@ -315,14 +322,14 @@ namespace KlayGE
 		pstride = 1;
 		*(effect_->ParameterByName("ostride")) = ostride;
 		*(effect_->ParameterByName("pstride")) = pstride;
-		
+
 		istride /= 8;
 		istride3 /= 8;
 		phase_base *= 8.0f;
 		*(effect_->ParameterByName("istride")) = istride;
 		*(effect_->ParameterByName("istride3")) = uint2(istride3, 0);
 		*(effect_->ParameterByName("phase_base")) = phase_base;
-		this->Radix008A(buf[index], buf[!index], thread_count, istride, false);
+		this->Radix008A(uavs[index], srvs[!index], thread_count, istride, false);
 		index = !index;
 
 		t = height_;
@@ -334,7 +341,7 @@ namespace KlayGE
 			*(effect_->ParameterByName("istride")) = istride;
 			*(effect_->ParameterByName("istride3")) = uint2(istride3, 0);
 			*(effect_->ParameterByName("phase_base")) = phase_base;
-			this->Radix008A(buf[index], buf[!index], thread_count, istride, false);
+			this->Radix008A(uavs[index], srvs[!index], thread_count, istride, false);
 			index = !index;
 
 			t /= 8;
@@ -348,9 +355,9 @@ namespace KlayGE
 		re.BindFrameBuffer(old_fb);
 	}
 
-	void GpuFftCS4::Radix008A(GraphicsBufferPtr const & dst,
-				   GraphicsBufferPtr const & src,
-				   uint32_t thread_count, uint32_t istride, bool first)
+	void GpuFftCS4::Radix008A(UnorderedAccessViewPtr const & dst,
+					ShaderResourceViewPtr const & src,
+					uint32_t thread_count, uint32_t istride, bool first)
 	{
 		// Setup execution configuration
 		uint32_t grid = (thread_count + COHERENCY_GRANULARITY - 1) / COHERENCY_GRANULARITY;
@@ -386,11 +393,11 @@ namespace KlayGE
 	{
 		RenderFactory& rf = Context::Instance().RenderFactoryInstance();
 
-		tmp_real_tex_[0] = rf.MakeTexture2D(width, height, 1, 1, EF_ABGR32F, 1, 0, EAH_GPU_Read | EAH_GPU_Unordered, nullptr);
-		tmp_imag_tex_[0] = rf.MakeTexture2D(width, height, 1, 1, EF_ABGR32F, 1, 0, EAH_GPU_Read | EAH_GPU_Unordered, nullptr);
+		tmp_real_tex_[0] = rf.MakeTexture2D(width, height, 1, 1, EF_ABGR32F, 1, 0, EAH_GPU_Read | EAH_GPU_Unordered);
+		tmp_imag_tex_[0] = rf.MakeTexture2D(width, height, 1, 1, EF_ABGR32F, 1, 0, EAH_GPU_Read | EAH_GPU_Unordered);
 
-		tmp_real_tex_[1] = rf.MakeTexture2D(width, height, 1, 1, EF_ABGR32F, 1, 0, EAH_GPU_Read | EAH_GPU_Unordered, nullptr);
-		tmp_imag_tex_[1] = rf.MakeTexture2D(width, height, 1, 1, EF_ABGR32F, 1, 0, EAH_GPU_Read | EAH_GPU_Unordered, nullptr);
+		tmp_real_tex_[1] = rf.MakeTexture2D(width, height, 1, 1, EF_ABGR32F, 1, 0, EAH_GPU_Read | EAH_GPU_Unordered);
+		tmp_imag_tex_[1] = rf.MakeTexture2D(width, height, 1, 1, EF_ABGR32F, 1, 0, EAH_GPU_Read | EAH_GPU_Unordered);
 
 		effect_ = SyncLoadRenderEffect("FFT.fxml");
 		radix008a_tech_ = effect_->TechniqueByName("FFTRadix008A5");

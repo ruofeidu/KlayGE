@@ -9,13 +9,13 @@
 
 #include <numeric>
 #include <boost/assert.hpp>
-#ifdef KLAYGE_COMPILER_CLANG
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wunused-parameter" // Ignore unused parameter in boost
+#if defined(KLAYGE_COMPILER_GCC)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstrict-aliasing" // Ignore aliasing in flat_tree.hpp
 #endif
 #include <boost/container/flat_map.hpp>
-#ifdef KLAYGE_COMPILER_CLANG
-#pragma clang diagnostic pop
+#if defined(KLAYGE_COMPILER_GCC)
+#pragma GCC diagnostic pop
 #endif
 
 #include "AsciiArtsPP.hpp"
@@ -102,7 +102,7 @@ namespace
 		init_data.slice_pitch = 0;
 
 		return Context::Instance().RenderFactoryInstance().MakeTexture2D(OUTPUT_NUM_ASCII * ASCII_WIDTH,
-			ASCII_HEIGHT, 1, 1, EF_R8, 1, 0, EAH_GPU_Read | EAH_Immutable, &init_data);
+			ASCII_HEIGHT, 1, 1, EF_R8, 1, 0, EAH_GPU_Read | EAH_Immutable, init_data);
 	}
 
 	class ascii_lums_builder
@@ -237,10 +237,10 @@ namespace
 }
 
 AsciiArtsPostProcess::AsciiArtsPostProcess()
-	: PostProcess(L"AsciiArts",
-			std::vector<std::string>(),
-			std::vector<std::string>(1, "src_tex"),
-			std::vector<std::string>(1, "output"),
+	: PostProcess(L"AsciiArts", false,
+			{},
+			{ "src_tex" },
+			{ "output" },
 			RenderEffectPtr(), nullptr)
 {
 	auto effect = SyncLoadRenderEffect("AsciiArtsPP.fxml");
@@ -248,7 +248,7 @@ AsciiArtsPostProcess::AsciiArtsPostProcess()
 
 	ascii_lums_builder builder(INPUT_NUM_ASCII, OUTPUT_NUM_ASCII, ASCII_WIDTH, ASCII_HEIGHT);
 
-	downsampler_ = SyncLoadPostProcess("Copy.ppml", "bilinear_copy");
+	downsampler_ = SyncLoadPostProcess("Copy.ppml", "BilinearCopy");
 
 	cell_per_row_line_ep_ = effect->ParameterByName("cell_per_row_line");
 	*(effect->ParameterByName("lums_tex")) = FillTexture(builder.build(LoadFromKFont("gkai00mp.kfont")));
@@ -259,7 +259,7 @@ void AsciiArtsPostProcess::InputPin(uint32_t index, TexturePtr const & tex)
 	RenderFactory& rf = Context::Instance().RenderFactoryInstance();
 
 	downsample_tex_ = rf.MakeTexture2D(tex->Width(0) / 2, tex->Height(0) / 2,
-		4, 1, tex->Format(), 1, 0, EAH_GPU_Read | EAH_GPU_Write | EAH_Generate_Mips, nullptr);
+		4, 1, tex->Format(), 1, 0, EAH_GPU_Read | EAH_GPU_Write | EAH_Generate_Mips);
 
 	downsampler_->InputPin(index, tex);
 	downsampler_->OutputPin(index, downsample_tex_);

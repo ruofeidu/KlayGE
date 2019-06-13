@@ -18,13 +18,16 @@
 		<parameter type="int" name="max_samples"/>
 	</cbuffer>
 	
-	<parameter type="texture2D" name="g_buffer_0_tex"/>
-	<parameter type="texture2D" name="g_buffer_1_tex"/>
+	<parameter type="texture2D" name="g_buffer_rt0_tex"/>
+	<parameter type="texture2DMS" name="g_buffer_rt0_tex_ms"/>
+	<parameter type="texture2D" name="g_buffer_rt1_tex"/>
+	<parameter type="texture2DMS" name="g_buffer_rt1_tex_ms"/>
 	<parameter type="texture2D" name="front_side_depth_tex"/>
 	<parameter type="texture2D" name="front_side_tex"/>
 	<parameter type="texture2D" name="back_side_depth_tex"/>
 	<parameter type="texture2D" name="back_side_tex"/>
 	<parameter type="texture2D" name="foreground_depth_tex"/>
+	<parameter type="texture2DMS" name="foreground_depth_tex_ms"/>
 
 	<parameter type="sampler" name="ssr_linear_sampler">
 		<state name="filtering" value="min_mag_linear_mip_point"/>
@@ -40,7 +43,7 @@
 
 	<shader>
 		<![CDATA[
-float4 CalcSSR(float2 tc, float3 normal, float3 pos_es, float3 incident_es, bool front_side, bool strictness)
+float4 CalcSSR(float2 tc, float3 normal, float3 pos_es, float3 incident_es, bool front_side, float depth_threshold)
 {
 	normal = normalize(normal); // eye space normal 
 	float3 view_dir = normalize(pos_es); // eye space view direction
@@ -48,6 +51,9 @@ float4 CalcSSR(float2 tc, float3 normal, float3 pos_es, float3 incident_es, bool
 	float linear_depth = pos_es.z;
 	float non_linear_depth = linear_depth_to_non_linear(linear_depth, near_q_far.x, near_q_far.y);
 	float3 tex_pos = float3(tc, non_linear_depth); // let z component be projected nonlinear depth, so we can do linear interpolation in screen space
+	
+	float2 tex_ddx = ddx(tc.xy);
+	float2 tex_ddy = ddy(tc.xy);
 
 	float3 reflect_vec = normalize(reflect(incident_es, normal)); // eye space reflect vector
 	float4 proj_ray_end = mul(float4(pos_es + reflect_vec * ray_length, 1), proj);
@@ -92,8 +98,6 @@ float4 CalcSSR(float2 tc, float3 normal, float3 pos_es, float3 incident_es, bool
 		float4 sample_step = float4(tex_offset, 1) / num_steps;
 
 		float3 cur_tex_pos = tex_pos;
-		float2 tex_ddx = ddx(cur_tex_pos.xy);
-		float2 tex_ddy = ddy(cur_tex_pos.xy);
 
 		float t = 0;
 		float4 pt = linear_depth;
@@ -133,27 +137,27 @@ float4 CalcSSR(float2 tc, float3 normal, float3 pos_es, float3 incident_es, bool
 		float sample_z;
 		if (front_side)
 		{
-			sample_z = front_side_depth_tex.Sample(ssr_linear_sampler, sample_tex_pos.xy).x;
+			sample_z = front_side_depth_tex.SampleGrad(ssr_linear_sampler, sample_tex_pos.xy, tex_ddx, tex_ddx).x;
 		}
 		else
 		{
-			sample_z = back_side_depth_tex.Sample(ssr_linear_sampler, sample_tex_pos.xy).x;
+			sample_z = back_side_depth_tex.SampleGrad(ssr_linear_sampler, sample_tex_pos.xy, tex_ddx, tex_ddx).x;
 		}
 
 		float4 ret;
-		if (!strictness || ((sample_z < near_q_far.z - 1e-6f)
-			&& (abs(sample_z - non_linear_depth_to_linear(sample_tex_pos.z, near_q_far.x, near_q_far.y)) < 0.1f)))
+		if ((sample_z < near_q_far.z - 1e-6f)
+			&& (abs(sample_z - non_linear_depth_to_linear(sample_tex_pos.z, near_q_far.x, near_q_far.y)) < depth_threshold))
 		{
 			float reflect_dir_fade_out_factor = 1 - orientation_factor;
 			float screen_edge_fade_out_factor = saturate((distance(sample_tex_pos.xy, 0.5f) - 0.4f) * 3);
 
 			if (front_side)
 			{
-				ret.xyz = front_side_tex.Sample(ssr_linear_sampler, sample_tex_pos.xy).rgb;
+				ret.xyz = front_side_tex.SampleGrad(ssr_linear_sampler, sample_tex_pos.xy, tex_ddx, tex_ddx).rgb;
 			}
 			else
 			{
-				ret.xyz = back_side_tex.Sample(ssr_linear_sampler, sample_tex_pos.xy).rgb;
+				ret.xyz = back_side_tex.SampleGrad(ssr_linear_sampler, sample_tex_pos.xy, tex_ddx, tex_ddx).rgb;
 			}
 			ret.w = 1 - max(screen_edge_fade_out_factor, reflect_dir_fade_out_factor);
 		}
@@ -175,12 +179,27 @@ void ScreenSpaceReflectionPostProcessVS(float4 pos : POSITION,
 	oViewDir = mul(oPos, inv_proj).xyz;
 }
 
-float4 ScreenSpaceReflectionPostProcessPS(float2 tc : TEXCOORD0, float3 view_dir : TEXCOORD1) : SV_Target
+float4 ScreenSpaceReflectionPostProcessPS(float2 tc : TEXCOORD0, float3 view_dir : TEXCOORD1,
+	uint sample_index : SV_SampleIndex) : SV_Target
 {
-	float3 pos_es = view_dir * (foreground_depth_tex.Sample(ssr_point_sampler, tc).x / view_dir.z);
-	float3 normal = GetNormal(g_buffer_0_tex.Sample(ssr_linear_sampler, tc));
-	float4 clr = CalcSSR(tc, normal, pos_es, pos_es, 1, 0);
-	float fresnel = FresnelTerm(-view_dir, normal, GetSpecular(g_buffer_1_tex.Sample(ssr_linear_sampler, tc))).x;
+#if KLAYGE_EXPLICIT_MULTI_SAMPLE_SUPPORT && MULTI_SAMPLE_INPUT
+	uint width, height, samples;
+	g_buffer_rt0_tex_ms.GetDimensions(width, height, samples);
+	int2 coord = tc * int2(width, height);
+
+	float4 rt0 = g_buffer_rt0_tex_ms.Load(coord, sample_index);
+	float4 rt1 = g_buffer_rt1_tex_ms.Load(coord, sample_index);
+	float depth = foreground_depth_tex_ms.Load(coord, sample_index).x;
+#else
+	float4 rt0 = g_buffer_rt0_tex.Sample(ssr_point_sampler, tc);
+	float4 rt1 = g_buffer_rt1_tex.Sample(ssr_point_sampler, tc);
+	float depth = foreground_depth_tex.Sample(ssr_point_sampler, tc).x;
+#endif
+
+	float3 pos_es = view_dir * (depth / view_dir.z);
+	float3 normal = GetNormal(rt0);
+	float4 clr = CalcSSR(tc, normal, pos_es, pos_es, 1, 0.1f);
+	float fresnel = FresnelTerm(-view_dir, normal, GetSpecular(rt1)).x;
 	return float4(clr.xyz, saturate(clr.w * fresnel));
 }
 		]]>
@@ -216,5 +235,8 @@ float4 ScreenSpaceReflectionPostProcessPS(float2 tc : TEXCOORD0, float3 view_dir
 			<state name="vertex_shader" value="ScreenSpaceReflectionPostProcessVS()"/>
 			<state name="pixel_shader" value="ScreenSpaceReflectionPostProcessPS()"/>
 		</pass>
+	</technique>
+	<technique name="ScreenSpaceReflectionPostProcessMS" inherit="ScreenSpaceReflectionPostProcess">
+		<macro name="MULTI_SAMPLE_INPUT" value="1"/>
 	</technique>
 </effect>

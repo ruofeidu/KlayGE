@@ -39,26 +39,45 @@
 namespace KlayGE
 {
 	SSVOPostProcess::SSVOPostProcess()
-			: PostProcess(L"SSVO")
+			: PostProcess(L"SSVO", false,
+				{},
+				{ "g_buffer_rt0_tex", "depth_tex" },
+				{ "out_tex" },
+				RenderEffectPtr(), nullptr)
 	{
-		input_pins_.emplace_back("g_buffer_tex", TexturePtr());
-		input_pins_.emplace_back("depth_tex", TexturePtr());
-
-		output_pins_.emplace_back("out_tex", TexturePtr());
-
 		auto effect = SyncLoadRenderEffect("SSVO.fxml");
 		this->Technique(effect, effect->TechniqueByName("SSVO"));
 
 		proj_param_ = effect->ParameterByName("proj");
 		inv_proj_param_ = effect->ParameterByName("inv_proj");
+
+		upper_left_param_ = effect->ParameterByName("upper_left");
+		x_dir_param_ = effect->ParameterByName("x_dir");
+		y_dir_param_ = effect->ParameterByName("y_dir");
+
+		aspect_param_ = effect_->ParameterByName("aspect");
 	}
 
 	void SSVOPostProcess::OnRenderBegin()
 	{
 		PostProcess::OnRenderBegin();
 
-		Camera const & camera = Context::Instance().AppInstance().ActiveCamera();
+		auto& re = Context::Instance().RenderFactoryInstance().RenderEngineInstance();
+		auto const & viewport = *re.CurFrameBuffer()->GetViewport();
+
+		Camera const & camera = *viewport.camera;
+		auto const & inv_proj = camera.InverseProjMatrix();
 		*proj_param_ = camera.ProjMatrix();
-		*inv_proj_param_ = camera.InverseProjMatrix();
+		*inv_proj_param_ = inv_proj;
+
+		float const flipping = re.RequiresFlipping() ? -1.0f : +1.0f;
+		float3 const upper_left = MathLib::transform_coord(float3(-1, -flipping, 1), inv_proj);
+		float3 const upper_right = MathLib::transform_coord(float3(+1, -flipping, 1), inv_proj);
+		float3 const lower_left = MathLib::transform_coord(float3(-1, flipping, 1), inv_proj);
+		*upper_left_param_ = upper_left;
+		*x_dir_param_ = upper_right - upper_left;
+		*y_dir_param_ = lower_left - upper_left;
+
+		*aspect_param_ = static_cast<float>(viewport.width) / viewport.height;
 	}
 }

@@ -34,60 +34,31 @@
 #pragma once
 
 #include <KFL/PreDeclare.hpp>
+#include <KFL/CXX17/string_view.hpp>
 
 namespace KlayGE
 {
 #define PRIME_NUM 0x9e3779b9
 
-#ifdef KLAYGE_CXX11_CORE_CONSTEXPR_SUPPORT
 #ifdef KLAYGE_COMPILER_MSVC
 #pragma warning(disable: 4307) // The hash here could cause integral constant overflow
 #endif
 
-	constexpr size_t _Hash(char const * str, size_t seed)
+	size_t constexpr CTHashImpl(char const * str, size_t seed)
 	{
-		return 0 == *str ? seed : _Hash(str + 1, seed ^ (*str + PRIME_NUM + (seed << 6) + (seed >> 2)));
+		return 0 == *str ? seed : CTHashImpl(str + 1, seed ^ (static_cast<size_t>(*str) + PRIME_NUM + (seed << 6) + (seed >> 2)));
 	}
 
-#ifdef KLAYGE_COMPILER_MSVC
+#if defined(KLAYGE_COMPILER_MSVC) && (_MSC_VER < 1914)
 	template <size_t N>
 	struct EnsureConst
 	{
-		static const size_t value = N;
+		static size_t constexpr value = N;
 	};
 
-	#define CT_HASH(x) (EnsureConst<_Hash(x, 0)>::value)
+	#define CT_HASH(x) (EnsureConst<CTHashImpl(x, 0)>::value)
 #else
-	#define CT_HASH(x) (_Hash(x, 0))
-#endif
-#else
-	#if defined(KLAYGE_COMPILER_MSVC)
-		#define FORCEINLINE __forceinline
-	#else
-		#define FORCEINLINE inline
-	#endif
-
-	FORCEINLINE size_t _Hash(const char (&str)[1])
-	{
-		return *str + PRIME_NUM;
-	}
-
-	template <size_t N>
-	FORCEINLINE size_t _Hash(const char (&str)[N])
-	{
-		typedef const char (&truncated_str)[N - 1];
-		size_t seed = _Hash((truncated_str)str);
-		return seed ^ (*(str + N - 1) + PRIME_NUM + (seed << 6) + (seed >> 2));
-	}
-
-	template <size_t N>
-	FORCEINLINE size_t CT_HASH(const char (&str)[N])
-	{
-		typedef const char (&truncated_str)[N - 1];
-		return _Hash((truncated_str)str);
-	}
-
-	#undef FORCEINLINE
+	#define CT_HASH(x) (CTHashImpl(x, 0))
 #endif
 
 	template <typename SizeT>

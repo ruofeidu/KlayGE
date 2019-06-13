@@ -28,8 +28,8 @@
  * from http://www.klayge.org/licensing/.
  */
 
-#ifndef _SCRIPTFACTORY_HPP
-#define _SCRIPTFACTORY_HPP
+#ifndef KLAYGE_CORE_SCRIPT_FACTORY_HPP
+#define KLAYGE_CORE_SCRIPT_FACTORY_HPP
 
 #pragma once
 
@@ -41,11 +41,12 @@
 
 namespace KlayGE
 {
-	class KLAYGE_CORE_API ScriptFactory
+	class KLAYGE_CORE_API ScriptFactory : boost::noncopyable
 	{
 	public:
 		virtual ~ScriptFactory()
-			{ }
+		{
+		}
 
 		virtual std::wstring const & Name() const = 0;
 		ScriptEngine& ScriptEngineInstance();
@@ -63,4 +64,4 @@ namespace KlayGE
 	};
 }
 
-#endif  // _SCRIPTFACTORY_HPP
+#endif		// KLAYGE_CORE_SCRIPT_FACTORY_HPP

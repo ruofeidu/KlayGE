@@ -39,8 +39,13 @@ namespace KlayGE
 		uint32_t NumFrames() const;
 		float CurrFrame() const;
 		float ModelFrameRate() const;
+
+		uint32_t NumLods() const;
+		void ActiveLod(int32_t lod);
+
 		uint32_t NumMeshes() const;
 		wchar_t const * MeshName(uint32_t index) const;
+
 		uint32_t NumVertexStreams(uint32_t mesh_id) const;
 		uint32_t NumVertexStreamUsages(uint32_t mesh_id, uint32_t stream_index) const;
 		uint32_t VertexStreamUsage(uint32_t mesh_id, uint32_t stream_index, uint32_t usage_index) const;
@@ -64,6 +69,7 @@ namespace KlayGE
 		bool TransparentMaterial(uint32_t mtl_id) const;
 		float AlphaTestMaterial(uint32_t mtl_id) const;
 		bool SSSMaterial(uint32_t mtl_id) const;
+		bool TwoSidedMaterial(uint32_t mtl_id) const;
 
 		void CurrFrame(float frame);
 		void SelectMesh(uint32_t mesh_id);
@@ -85,12 +91,14 @@ namespace KlayGE
 		void TransparentMaterial(uint32_t mtl_id, bool value);
 		void AlphaTestMaterial(uint32_t mtl_id, float value);
 		void SSSMaterial(uint32_t mtl_id, bool value);
+		void TwoSidedMaterial(uint32_t mtl_id, bool value);
 
 		uint32_t CopyMaterial(uint32_t mtl_id);
 		uint32_t ImportMaterial(std::string const & name);
 		void ExportMaterial(uint32_t mtl_id, std::string const & name);
 
 		void SkinningOn(bool on);
+		void SkeletonOn(bool on);
 		void LightOn(bool on);
 		void FPSCameraOn(bool on);
 		void LineModeOn(bool on);
@@ -118,6 +126,9 @@ namespace KlayGE
 		virtual uint32_t DoUpdate(uint32_t pass) override;
 
 		void UpdateSelectedMesh();
+		void UpdateEffectAttrib(uint32_t mtl_id);
+		void UpdateMaterial(uint32_t mtl_id);
+		void UpdateTechniques(uint32_t mtl_id);
 
 	private:
 		FontPtr font_;
@@ -125,11 +136,14 @@ namespace KlayGE
 		LightSourcePtr ambient_light_;
 		LightSourcePtr main_light_;
 
-		SceneObjectPtr model_;
-		SceneObjectPtr imposter_;
-		SceneObjectPtr axis_;
-		SceneObjectPtr grid_;
-		SceneObjectPtr sky_box_;
+		SceneNodePtr object_;
+		RenderModelPtr model_;
+		SceneNodePtr skeleton_object_;
+		SkinnedMeshPtr skeleton_model_;
+		SceneNodePtr imposter_;
+		SceneNodePtr axis_;
+		SceneNodePtr grid_;
+		SceneNodePtr skybox_;
 
 		FirstPersonCameraController fps_controller_;
 		TrackballCameraController tb_controller_;
@@ -156,7 +170,7 @@ namespace KlayGE
 		TexturePtr selective_cpu_tex_;
 		bool update_selective_buffer_;
 		uint32_t selected_obj_;
-		SceneObjectPtr selected_bb_;
+		SceneNodePtr selected_bb_;
 
 		UpdateSelectEntityEvent update_select_entity_event_;
 	};

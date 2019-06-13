@@ -29,10 +29,6 @@
  */
 
 #include <KlayGE/KlayGE.hpp>
-#include <KFL/ThrowErr.hpp>
-#include <KFL/Util.hpp>
-
-#include <boost/assert.hpp>
 
 #include <KlayGE/Script.hpp>
 
@@ -46,29 +42,11 @@ namespace KlayGE
 	{
 	}
 
-	std::experimental::any ScriptModule::Value(std::string const & /*name*/)
-	{
-		return std::experimental::any();
-	}
 
-	std::experimental::any ScriptModule::Call(std::string const & /*func_name*/, const AnyDataListType& /*args*/)
-	{
-		return std::experimental::any();
-	}
-
-	std::experimental::any ScriptModule::RunString(std::string const & /*script*/)
-	{
-		return std::experimental::any();
-	}
-
-	// 构造函数
-	/////////////////////////////////////////////////////////////////////////////////
 	ScriptEngine::ScriptEngine()
 	{
 	}
 
-	// 析构函数
-	/////////////////////////////////////////////////////////////////////////////////
 	ScriptEngine::~ScriptEngine()
 	{
 	}
@@ -81,11 +59,5 @@ namespace KlayGE
 	void ScriptEngine::Resume()
 	{
 		this->DoResume();
-	}
-
-	ScriptModulePtr ScriptEngine::CreateModule(std::string const & /*name*/)
-	{
-		static ScriptModulePtr obj = MakeSharedPtr<ScriptModule>();
-		return obj;
 	}
 }

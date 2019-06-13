@@ -29,15 +29,18 @@
  */
 
 #include <KlayGE/KlayGE.hpp>
+#include <KFL/CXX17/iterator.hpp>
 #include <KFL/COMPtr.hpp>
+#include <KFL/ErrorHandling.hpp>
 #include <KlayGE/Context.hpp>
-#include <KFL/ThrowErr.hpp>
 
 #include <KlayGE/MsgInput/MInput.hpp>
 
-#if ((defined KLAYGE_PLATFORM_WINDOWS_DESKTOP) && (_WIN32_WINNT >= _WIN32_WINNT_WIN7) && (_WIN32_WINNT < _WIN32_WINNT_WIN10)) \
-	|| (defined KLAYGE_PLATFORM_WINDOWS_RUNTIME) \
-	|| (defined KLAYGE_PLATFORM_ANDROID)
+#if defined KLAYGE_PLATFORM_ANDROID
+#include <android_native_app_glue.h>
+#endif
+
+#if defined(KLAYGE_PLATFORM_WINDOWS_DESKTOP) || defined(KLAYGE_PLATFORM_WINDOWS_STORE) || defined(KLAYGE_PLATFORM_ANDROID)
 namespace KlayGE
 {
 	std::wstring const & MsgInputSensor::Name() const
@@ -52,14 +55,14 @@ namespace KlayGE
 }
 #endif
 
-#if (defined KLAYGE_PLATFORM_WINDOWS_DESKTOP) && (_WIN32_WINNT >= _WIN32_WINNT_WIN7) && (_WIN32_WINNT < _WIN32_WINNT_WIN10)
+#if defined(KLAYGE_PLATFORM_WINDOWS_DESKTOP)
 
 #if (_WIN32_WINNT < _WIN32_WINNT_WINBLUE)
 	// Magnetometer Accuracy Data Types
 	DEFINE_PROPERTYKEY(SENSOR_DATA_TYPE_MAGNETOMETER_ACCURACY,
 		0X1637D8A2, 0X4248, 0X4275, 0X86, 0X5D, 0X55, 0X8D, 0XE8, 0X4A, 0XED, 0XFD, 22); //[VT_I4]
 
-	#if (_WIN32_WINNT < _WIN32_WINNT_WIN8)
+	#if (_WIN32_WINNT == _WIN32_WINNT_WIN7) && !defined(KLAYGE_COMPILER_GCC)
 		// Additional Motion Data Types
 		DEFINE_PROPERTYKEY(SENSOR_DATA_TYPE_ANGULAR_VELOCITY_X_DEGREES_PER_SECOND,
 			0X3F8A69A2, 0X7C5, 0X4E48, 0XA9, 0X65, 0XCD, 0X79, 0X7A, 0XAB, 0X56, 0XD5, 10); //[VT_R8]
@@ -80,6 +83,7 @@ namespace KlayGE
 
 namespace KlayGE
 {
+#if (_WIN32_WINNT < _WIN32_WINNT_WIN10)
 	class MsgInputLocationEvents : public ILocationEvents
 	{
 	public:
@@ -159,6 +163,7 @@ namespace KlayGE
 	private:
 		long ref_;
 	};
+#endif
 
 	class MsgInputSensorEvents : public ISensorEvents
 	{
@@ -260,12 +265,15 @@ namespace KlayGE
 		{
 			HRESULT hr = S_OK;
 
-			if ((nullptr == data_report) || (nullptr == sensor))
+			if (!input_sensor_->Destroyed())
 			{
-				return E_INVALIDARG;
-			}
+				if ((nullptr == data_report) || (nullptr == sensor))
+				{
+					return E_INVALIDARG;
+				}
 
-			input_sensor_->OnMotionDataUpdated(sensor, data_report);
+				input_sensor_->OnMotionDataUpdated(sensor, data_report);
+			}
 
 			return hr;
 		}
@@ -283,12 +291,15 @@ namespace KlayGE
 		{
 			HRESULT hr = S_OK;
 
-			if ((nullptr == data_report) || (nullptr == sensor))
+			if (!input_sensor_->Destroyed())
 			{
-				return E_INVALIDARG;
-			}
+				if ((nullptr == data_report) || (nullptr == sensor))
+				{
+					return E_INVALIDARG;
+				}
 
-			input_sensor_->OnOrientationDataUpdated(sensor, data_report);
+				input_sensor_->OnOrientationDataUpdated(sensor, data_report);
+			}
 
 			return hr;
 		}
@@ -296,9 +307,11 @@ namespace KlayGE
 
 
 	MsgInputSensor::MsgInputSensor()
+		: destroyed_(false)
 	{
 		HRESULT hr = ::CoInitialize(0);
 
+#if (_WIN32_WINNT < _WIN32_WINNT_WIN10)
 		if (Context::Instance().Config().location_sensor)
 		{
 			ILocation* location = nullptr;
@@ -307,17 +320,16 @@ namespace KlayGE
 			if (SUCCEEDED(hr))
 			{
 				IID REPORT_TYPES[] = { IID_ILatLongReport };
-				hr = location->RequestPermissions(nullptr, REPORT_TYPES,
-					sizeof(REPORT_TYPES) / sizeof(REPORT_TYPES[0]), true);
+				hr = location->RequestPermissions(nullptr, REPORT_TYPES, static_cast<ULONG>(std::size(REPORT_TYPES)), true);
 				if (SUCCEEDED(hr))
 				{
 					locator_ = MakeCOMPtr(location);
 
-					location_event_ = MakeSharedPtr<MsgInputLocationEvents>(this);
+					location_event_ = MakeCOMPtr(new MsgInputLocationEvents(this));
 					ILocationEvents* sensor_event;
 					location_event_->QueryInterface(IID_ILocationEvents, reinterpret_cast<void**>(&sensor_event));
 
-					for (DWORD index = 0; index < sizeof(REPORT_TYPES) / sizeof(REPORT_TYPES[0]); ++ index)
+					for (DWORD index = 0; index < std::size(REPORT_TYPES); ++ index)
 					{
 						hr = locator_->RegisterForReport(sensor_event, REPORT_TYPES[index], 1000);
 					}
@@ -330,6 +342,7 @@ namespace KlayGE
 				}
 			}
 		}
+#endif
 
 		ISensorManager* sensor_mgr = nullptr;
 		hr = ::CoCreateInstance(CLSID_SensorManager, nullptr, CLSCTX_INPROC_SERVER,
@@ -352,10 +365,12 @@ namespace KlayGE
 						hr = motion_sensor_collection_->GetAt(i, &sensor);
 						if (SUCCEEDED(hr))
 						{
-							std::shared_ptr<MsgInputMotionSensorEvents> motion_event = MakeSharedPtr<MsgInputMotionSensorEvents>(this);
+							std::shared_ptr<MsgInputMotionSensorEvents> motion_event
+								= MakeCOMPtr(new MsgInputMotionSensorEvents(this));
+							motion_sensor_events_.push_back(motion_event);
+
 							ISensorEvents* sensor_event;
 							motion_event->QueryInterface(IID_ISensorEvents, reinterpret_cast<void**>(&sensor_event));
-							motion_sensor_events_.push_back(motion_event);
 
 							sensor->SetEventSink(sensor_event);
 
@@ -382,10 +397,12 @@ namespace KlayGE
 						hr = orientation_sensor_collection_->GetAt(i, &sensor);
 						if (SUCCEEDED(hr))
 						{
-							std::shared_ptr<MsgInputOrientationSensorEvents> orientation_event = MakeSharedPtr<MsgInputOrientationSensorEvents>(this);
+							std::shared_ptr<MsgInputOrientationSensorEvents> orientation_event
+								= MakeCOMPtr(new MsgInputOrientationSensorEvents(this));
+							orientation_sensor_events_.push_back(orientation_event);
+
 							ISensorEvents* sensor_event;
 							orientation_event->QueryInterface(IID_ISensorEvents, reinterpret_cast<void**>(&sensor_event));
-							orientation_sensor_events_.push_back(orientation_event);
 
 							sensor->SetEventSink(sensor_event);
 
@@ -402,10 +419,13 @@ namespace KlayGE
 
 	MsgInputSensor::~MsgInputSensor()
 	{
+		destroyed_ = true;
+
+#if (_WIN32_WINNT < _WIN32_WINNT_WIN10)
 		if (locator_)
 		{
 			IID REPORT_TYPES[] = { IID_ILatLongReport };
-			for (DWORD index = 0; index < sizeof(REPORT_TYPES) / sizeof(REPORT_TYPES[0]); ++ index)
+			for (DWORD index = 0; index < std::size(REPORT_TYPES); ++ index)
 			{
 				locator_->UnregisterForReport(REPORT_TYPES[index]);
 			}
@@ -413,47 +433,16 @@ namespace KlayGE
 			location_event_.reset();
 			locator_.reset();
 		}
+#endif
 
 		if (motion_sensor_collection_)
 		{
-			ULONG count = 0;
-			HRESULT hr = motion_sensor_collection_->GetCount(&count);
-			if (SUCCEEDED(hr))
-			{
-				for (ULONG i = 0; i < count; ++ i)
-				{
-					ISensor* sensor;
-					hr = motion_sensor_collection_->GetAt(i, &sensor);
-					if (SUCCEEDED(hr))
-					{
-						sensor->SetEventSink(nullptr);
-						sensor->Release();
-					}
-				}
-			}
-
 			motion_sensor_events_.clear();
 			motion_sensor_collection_.reset();
 		}
 
 		if (orientation_sensor_collection_)
 		{
-			ULONG count = 0;
-			HRESULT hr = orientation_sensor_collection_->GetCount(&count);
-			if (SUCCEEDED(hr))
-			{
-				for (ULONG i = 0; i < count; ++ i)
-				{
-					ISensor* sensor;
-					hr = orientation_sensor_collection_->GetAt(i, &sensor);
-					if (SUCCEEDED(hr))
-					{
-						sensor->SetEventSink(nullptr);
-						sensor->Release();
-					}
-				}
-			}
-
 			orientation_sensor_events_.clear();
 			orientation_sensor_collection_.reset();
 		}
@@ -461,6 +450,7 @@ namespace KlayGE
 		::CoUninitialize();
 	}
 
+#if (_WIN32_WINNT < _WIN32_WINNT_WIN10)
 	void MsgInputSensor::OnLocationChanged(REFIID report_type, ILocationReport* location_report)
 	{
 		if (IID_ILatLongReport == report_type)
@@ -503,6 +493,7 @@ namespace KlayGE
 			}
 		}
 	}
+#endif
 
 	void MsgInputSensor::OnMotionDataUpdated(ISensor* sensor, ISensorDataReport* data_report)
 	{
@@ -737,7 +728,7 @@ namespace KlayGE
 	}
 }
 
-#elif defined KLAYGE_PLATFORM_WINDOWS_RUNTIME
+#elif defined KLAYGE_PLATFORM_WINDOWS_STORE
 
 #include <wrl/client.h>
 #include <wrl/event.h>
@@ -757,92 +748,110 @@ namespace KlayGE
 		if (Context::Instance().Config().location_sensor)
 		{
 			ABI::Windows::Devices::Geolocation::IGeolocator* locator;
-			TIF(Windows::Foundation::ActivateInstance(HStringReference(RuntimeClass_Windows_Devices_Geolocation_Geolocator).Get(),
+			TIFHR(Windows::Foundation::ActivateInstance(HStringReference(RuntimeClass_Windows_Devices_Geolocation_Geolocator).Get(),
 				&locator));
 			locator_ = MakeCOMPtr(locator);
 
 			auto callback = Callback<ITypedEventHandler<Geolocator*, PositionChangedEventArgs*>>(
-				std::bind(&MsgInputSensor::OnPositionChanged, this, std::placeholders::_1, std::placeholders::_2));
-			TIF(locator_->add_PositionChanged(callback.Get(), &position_token_));
+				[this](IGeolocator* sender, IPositionChangedEventArgs* e)
+				{
+					return this->OnPositionChanged(sender, e);
+				});
+			TIFHR(locator_->add_PositionChanged(callback.Get(), &position_token_));
 		}
 		{
 			ComPtr<IAccelerometerStatics> accelerometer_stat;
-			TIF(GetActivationFactory(HStringReference(RuntimeClass_Windows_Devices_Sensors_Accelerometer).Get(),
+			TIFHR(GetActivationFactory(HStringReference(RuntimeClass_Windows_Devices_Sensors_Accelerometer).Get(),
 				&accelerometer_stat));
 
 			IAccelerometer* accelerometer;
-			TIF(accelerometer_stat->GetDefault(&accelerometer));
+			TIFHR(accelerometer_stat->GetDefault(&accelerometer));
 			if (accelerometer)
 			{
 				accelerometer_ = MakeCOMPtr(accelerometer);
 
 				auto callback = Callback<ITypedEventHandler<Accelerometer*, AccelerometerReadingChangedEventArgs*>>(
-					std::bind(&MsgInputSensor::OnAccelerometeReadingChanged, this, std::placeholders::_1, std::placeholders::_2));
-				TIF(accelerometer_->add_ReadingChanged(callback.Get(), &accelerometer_reading_token_));
+					[this](IAccelerometer* sender, IAccelerometerReadingChangedEventArgs* e)
+					{
+						return this->OnAccelerometeReadingChanged(sender, e);
+					});
+				TIFHR(accelerometer_->add_ReadingChanged(callback.Get(), &accelerometer_reading_token_));
 			}
 		}
 		{
 			ComPtr<IGyrometerStatics> gyrometer_stat;
-			TIF(GetActivationFactory(HStringReference(RuntimeClass_Windows_Devices_Sensors_Gyrometer).Get(),
+			TIFHR(GetActivationFactory(HStringReference(RuntimeClass_Windows_Devices_Sensors_Gyrometer).Get(),
 				&gyrometer_stat));
 
 			IGyrometer* gyrometer;
-			TIF(gyrometer_stat->GetDefault(&gyrometer));
+			TIFHR(gyrometer_stat->GetDefault(&gyrometer));
 			if (gyrometer)
 			{
 				gyrometer_ = MakeCOMPtr(gyrometer);
 
 				auto callback = Callback<ITypedEventHandler<Gyrometer*, GyrometerReadingChangedEventArgs*>>(
-					std::bind(&MsgInputSensor::OnGyrometerReadingChanged, this, std::placeholders::_1, std::placeholders::_2));
-				TIF(gyrometer_->add_ReadingChanged(callback.Get(), &gyrometer_reading_token_));
+					[this](IGyrometer* sender, IGyrometerReadingChangedEventArgs* e)
+					{
+						return this->OnGyrometerReadingChanged(sender, e);
+					});
+				TIFHR(gyrometer_->add_ReadingChanged(callback.Get(), &gyrometer_reading_token_));
 			}
 		}
 		{
 			ComPtr<IInclinometerStatics> inclinometer_stat;
-			TIF(GetActivationFactory(HStringReference(RuntimeClass_Windows_Devices_Sensors_Inclinometer).Get(),
+			TIFHR(GetActivationFactory(HStringReference(RuntimeClass_Windows_Devices_Sensors_Inclinometer).Get(),
 				&inclinometer_stat));
 
 			IInclinometer* inclinometer;
-			TIF(inclinometer_stat->GetDefault(&inclinometer));
+			TIFHR(inclinometer_stat->GetDefault(&inclinometer));
 			if (inclinometer)
 			{
 				inclinometer_ = MakeCOMPtr(inclinometer);
 
 				auto callback = Callback<ITypedEventHandler<Inclinometer*, InclinometerReadingChangedEventArgs*>>(
-					std::bind(&MsgInputSensor::OnInclinometerReadingChanged, this, std::placeholders::_1, std::placeholders::_2));
-				TIF(inclinometer_->add_ReadingChanged(callback.Get(), &inclinometer_reading_token_));
+					[this](IInclinometer* sender, IInclinometerReadingChangedEventArgs* e)
+					{
+						return this->OnInclinometerReadingChanged(sender, e);
+					});
+				TIFHR(inclinometer_->add_ReadingChanged(callback.Get(), &inclinometer_reading_token_));
 			}
 		}
 		{
 			ComPtr<ICompassStatics> compass_stat;
-			TIF(GetActivationFactory(HStringReference(RuntimeClass_Windows_Devices_Sensors_Compass).Get(),
+			TIFHR(GetActivationFactory(HStringReference(RuntimeClass_Windows_Devices_Sensors_Compass).Get(),
 				&compass_stat));
 
 			ICompass* compass;
-			TIF(compass_stat->GetDefault(&compass));
+			TIFHR(compass_stat->GetDefault(&compass));
 			if (compass)
 			{
 				compass_ = MakeCOMPtr(compass);
 
 				auto callback = Callback<ITypedEventHandler<Compass*, CompassReadingChangedEventArgs*>>(
-					std::bind(&MsgInputSensor::OnCompassReadingChanged, this, std::placeholders::_1, std::placeholders::_2));
-				TIF(compass_->add_ReadingChanged(callback.Get(), &compass_reading_token_));
+					[this](ICompass* sender, ICompassReadingChangedEventArgs* e)
+					{
+						return this->OnCompassReadingChanged(sender, e);
+					});
+				TIFHR(compass_->add_ReadingChanged(callback.Get(), &compass_reading_token_));
 			}
 		}
 		{
 			ComPtr<IOrientationSensorStatics> orientation_stat;
-			TIF(GetActivationFactory(HStringReference(RuntimeClass_Windows_Devices_Sensors_OrientationSensor).Get(),
+			TIFHR(GetActivationFactory(HStringReference(RuntimeClass_Windows_Devices_Sensors_OrientationSensor).Get(),
 				&orientation_stat));
 			
 			IOrientationSensor* orientation;
-			TIF(orientation_stat->GetDefault(&orientation));
+			TIFHR(orientation_stat->GetDefault(&orientation));
 			if (orientation)
 			{
 				orientation_ = MakeCOMPtr(orientation);
 
 				auto callback = Callback<ITypedEventHandler<OrientationSensor*, OrientationSensorReadingChangedEventArgs*>>(
-					std::bind(&MsgInputSensor::OnOrientationSensorReadingChanged, this, std::placeholders::_1, std::placeholders::_2));
-				TIF(orientation_->add_ReadingChanged(callback.Get(), &orientation_reading_token_));
+					[this](IOrientationSensor* sender, IOrientationSensorReadingChangedEventArgs* e)
+					{
+						return this->OnOrientationSensorReadingChanged(sender, e);
+					});
+				TIFHR(orientation_->add_ReadingChanged(callback.Get(), &orientation_reading_token_));
 			}
 		}
 	}
@@ -880,51 +889,38 @@ namespace KlayGE
 		KFL_UNUSED(sender);
 
 		ComPtr<IGeoposition> position;
-		TIF(e->get_Position(&position));
+		TIFHR(e->get_Position(&position));
 		ComPtr<IGeocoordinate> coordinate;
-		TIF(position->get_Coordinate(&coordinate));
+		TIFHR(position->get_Coordinate(&coordinate));
 		
 		double tmp;
 		IReference<double>* rtmp;
 
-#if (_WIN32_WINNT >= _WIN32_WINNT_WINBLUE)
 		ComPtr<IGeocoordinateWithPoint> coordinate_with_point;
-		TIF(coordinate.As(&coordinate_with_point));
+		TIFHR(coordinate.As(&coordinate_with_point));
 		ComPtr<IGeopoint> point;
-		TIF(coordinate_with_point->get_Point(&point));
+		TIFHR(coordinate_with_point->get_Point(&point));
 		BasicGeoposition geo_position;
-		TIF(point->get_Position(&geo_position));
+		TIFHR(point->get_Position(&geo_position));
 		latitude_ = static_cast<float>(geo_position.Latitude);
 		longitude_ = static_cast<float>(geo_position.Longitude);
 		altitude_ = static_cast<float>(geo_position.Altitude);
-#else
-		TIF(coordinate->get_Latitude(&tmp));
-		latitude_ = static_cast<float>(tmp);
-		TIF(coordinate->get_Longitude(&tmp));
-		longitude_ = static_cast<float>(tmp);
-		TIF(coordinate->get_Altitude(&rtmp));
-		if (rtmp)
-		{
-			TIF(rtmp->get_Value(&tmp));
-			altitude_ = static_cast<float>(tmp);
-		}
-#endif
 
-		TIF(coordinate->get_Accuracy(&tmp));
+		TIFHR(coordinate->get_Accuracy(&tmp));
 		location_error_radius_ = static_cast<float>(tmp);
 
-		TIF(coordinate->get_AltitudeAccuracy(&rtmp));
+		TIFHR(coordinate->get_AltitudeAccuracy(&rtmp));
 		if (rtmp)
 		{
-			TIF(rtmp->get_Value(&tmp));
+			TIFHR(rtmp->get_Value(&tmp));
 			location_altitude_error_ = static_cast<float>(tmp);
 		}
 
 		rtmp = nullptr;
-		TIF(coordinate->get_Speed(&rtmp));
+		TIFHR(coordinate->get_Speed(&rtmp));
 		if (rtmp)
 		{
-			TIF(rtmp->get_Value(&tmp));
+			TIFHR(rtmp->get_Value(&tmp));
 			speed_ = static_cast<float>(tmp);
 		}
 
@@ -936,17 +932,17 @@ namespace KlayGE
 		KFL_UNUSED(sender);
 
 		ComPtr<IAccelerometerReading> reading;
-		TIF(e->get_Reading(&reading));
+		TIFHR(e->get_Reading(&reading));
 
 		double tmp;
 
-		TIF(reading->get_AccelerationX(&tmp));
+		TIFHR(reading->get_AccelerationX(&tmp));
 		accel_.x() = static_cast<float>(tmp);
 
-		TIF(reading->get_AccelerationY(&tmp));
+		TIFHR(reading->get_AccelerationY(&tmp));
 		accel_.y() = static_cast<float>(tmp);
 
-		TIF(reading->get_AccelerationZ(&tmp));
+		TIFHR(reading->get_AccelerationZ(&tmp));
 		accel_.z() = static_cast<float>(tmp);
 
 		return S_OK;
@@ -957,17 +953,17 @@ namespace KlayGE
 		KFL_UNUSED(sender);
 
 		ComPtr<IGyrometerReading> reading;
-		TIF(e->get_Reading(&reading));
+		TIFHR(e->get_Reading(&reading));
 
 		double tmp;
 
-		TIF(reading->get_AngularVelocityX(&tmp));
+		TIFHR(reading->get_AngularVelocityX(&tmp));
 		angular_velocity_.x() = static_cast<float>(tmp);
 
-		TIF(reading->get_AngularVelocityY(&tmp));
+		TIFHR(reading->get_AngularVelocityY(&tmp));
 		angular_velocity_.y() = static_cast<float>(tmp);
 
-		TIF(reading->get_AngularVelocityZ(&tmp));
+		TIFHR(reading->get_AngularVelocityZ(&tmp));
 		angular_velocity_.z() = static_cast<float>(tmp);
 
 		return S_OK;
@@ -978,11 +974,11 @@ namespace KlayGE
 		KFL_UNUSED(sender);
 
 		ComPtr<IInclinometerReading> reading;
-		TIF(e->get_Reading(&reading));
+		TIFHR(e->get_Reading(&reading));
 
-		TIF(reading->get_PitchDegrees(&tilt_.x()));
-		TIF(reading->get_RollDegrees(&tilt_.y()));
-		TIF(reading->get_YawDegrees(&tilt_.z()));
+		TIFHR(reading->get_PitchDegrees(&tilt_.x()));
+		TIFHR(reading->get_RollDegrees(&tilt_.y()));
+		TIFHR(reading->get_YawDegrees(&tilt_.z()));
 
 		return S_OK;
 	}
@@ -992,28 +988,24 @@ namespace KlayGE
 		KFL_UNUSED(sender);
 
 		ComPtr<ICompassReading> reading;
-		TIF(e->get_Reading(&reading));
+		TIFHR(e->get_Reading(&reading));
 
 		double tmp;
 
-		TIF(reading->get_HeadingMagneticNorth(&tmp));
+		TIFHR(reading->get_HeadingMagneticNorth(&tmp));
 		magnetic_heading_north_ = static_cast<float>(tmp);
 
-#if (_WIN32_WINNT >= _WIN32_WINNT_WINBLUE)
 		ComPtr<ICompassReadingHeadingAccuracy> reading_with_accuracy;
 		if (SUCCEEDED(reading.As(&reading_with_accuracy)))
 		{
 			ABI::Windows::Devices::Sensors::MagnetometerAccuracy accuracy;
-			TIF(reading_with_accuracy->get_HeadingAccuracy(&accuracy));
+			TIFHR(reading_with_accuracy->get_HeadingAccuracy(&accuracy));
 			magnetometer_accuracy_ = static_cast<int32_t>(accuracy);
 		}
 		else
 		{
 			magnetometer_accuracy_ = 0;
 		}
-#else
-		magnetometer_accuracy_ = 0;
-#endif
 
 		return S_OK;
 	}
@@ -1024,15 +1016,15 @@ namespace KlayGE
 		KFL_UNUSED(sender);
 
 		ComPtr<IOrientationSensorReading> reading;
-		TIF(e->get_Reading(&reading));
+		TIFHR(e->get_Reading(&reading));
 
 		ComPtr<ISensorQuaternion> quat;
-		TIF(reading->get_Quaternion(&quat));
+		TIFHR(reading->get_Quaternion(&quat));
 
-		TIF(quat->get_X(&orientation_quat_.x()));
-		TIF(quat->get_Y(&orientation_quat_.y()));
-		TIF(quat->get_Z(&orientation_quat_.z()));
-		TIF(quat->get_W(&orientation_quat_.w()));
+		TIFHR(quat->get_X(&orientation_quat_.x()));
+		TIFHR(quat->get_Y(&orientation_quat_.y()));
+		TIFHR(quat->get_Z(&orientation_quat_.z()));
+		TIFHR(quat->get_W(&orientation_quat_.w()));
 
 		return S_OK;
 	}
@@ -1044,7 +1036,11 @@ namespace KlayGE
 {
 	MsgInputSensor::MsgInputSensor()
 	{
+#if __ANDROID_API__ >= 26
+		sensor_mgr_ = ASensorManager_getInstanceForPackage(nullptr);
+#else
 		sensor_mgr_ = ASensorManager_getInstance();
+#endif
 		if (sensor_mgr_)
 		{
 			sensor_event_queue_ = ASensorManager_createEventQueue(sensor_mgr_, ALooper_forThread(),

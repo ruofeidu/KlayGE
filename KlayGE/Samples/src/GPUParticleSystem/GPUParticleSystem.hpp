@@ -11,8 +11,6 @@ class GPUParticleSystemApp : public KlayGE::App3DFramework
 public:
 	GPUParticleSystemApp();
 
-	bool ConfirmDevice() const override;
-
 private:
 	void OnCreate();
 	void OnResize(KlayGE::uint32_t width, KlayGE::uint32_t height);
@@ -24,8 +22,9 @@ private:
 
 	KlayGE::FontPtr font_;
 
-	KlayGE::SceneObjectPtr particles_;
-	KlayGE::SceneObjectPtr terrain_;
+	KlayGE::SceneNodePtr particles_;
+	KlayGE::RenderablePtr particles_renderable_;
+	KlayGE::SceneNodePtr terrain_;
 
 	KlayGE::TrackballCameraController tb_controller_;
 

@@ -16,18 +16,20 @@
 #pragma once
 
 #include <KlayGE/PreDeclare.hpp>
+#include <KlayGE/SceneComponent.hpp>
 
 #include <array>
 
 namespace KlayGE
 {
-	class KLAYGE_CORE_API LightSource : public std::enable_shared_from_this<LightSource>
+	class KLAYGE_CORE_API LightSource : public SceneComponent, public std::enable_shared_from_this<LightSource>
 	{
 	public:
+		BOOST_TYPE_INDEX_REGISTER_RUNTIME_CLASS((SceneComponent))
+
 		enum LightType
 		{
 			LT_Ambient = 0,
-			LT_Sun,
 			LT_Directional,
 			LT_Point,
 			LT_Spot,
@@ -56,16 +58,6 @@ namespace KlayGE
 		int32_t Attrib() const;
 		virtual void Attrib(int32_t attrib);
 
-		bool Enabled() const;
-		void Enabled(bool enabled);
-
-		void BindUpdateFunc(std::function<void(LightSource&, float, float)> const & update_func);
-
-		virtual void Update(float app_time, float elapsed_time);
-
-		virtual void AddToSceneManager();
-		virtual void DelFromSceneManager();
-
 		float4 const & Color() const;
 		void Color(float3 const & clr);
 
@@ -75,13 +67,9 @@ namespace KlayGE
 		virtual void SkylightTex(TexturePtr const & tex_y, TexturePtr const & tex_c);
 		virtual void SkylightTex(TexturePtr const & tex);
 
-		virtual float3 const & Position() const;
-		virtual void Position(float3 const & pos);
-		virtual float3 Direction() const;
-		virtual void Direction(float3 const & dir);
-		virtual Quaternion const & Rotation() const;
-		virtual void Rotation(Quaternion const & quat);
-		virtual void ModelMatrix(float4x4 const & model);
+		float3 const & Position() const;
+		float3 const & Direction() const;
+		Quaternion Rotation() const;
 		virtual float3 const & Falloff() const;
 		virtual void Falloff(float3 const & fall_off);
 		virtual float CosInnerAngle() const;
@@ -108,13 +96,10 @@ namespace KlayGE
 
 	protected:
 		LightType type_;
-		int32_t attrib_;
-		bool enabled_;
-		float4 color_;
-		Quaternion quat_;
-		float3 pos_;
+		int32_t attrib_ = 0;
+		float4 color_ = float4(0, 0, 0, 0);
 		float3 falloff_;
-		float range_;
+		float range_ = -1;
 
 		std::function<void(LightSource&, float, float)> update_func_;
 	};
@@ -122,6 +107,8 @@ namespace KlayGE
 	class KLAYGE_CORE_API AmbientLightSource : public LightSource
 	{
 	public:
+		BOOST_TYPE_INDEX_REGISTER_RUNTIME_CLASS((LightSource))
+
 		AmbientLightSource();
 		virtual ~AmbientLightSource();
 
@@ -142,16 +129,14 @@ namespace KlayGE
 	class KLAYGE_CORE_API PointLightSource : public LightSource
 	{
 	public:
+		BOOST_TYPE_INDEX_REGISTER_RUNTIME_CLASS((LightSource))
+
 		PointLightSource();
 		virtual ~PointLightSource();
 
-		using LightSource::Position;
-		virtual void Position(float3 const & pos) override;
-		using LightSource::Direction;
-		virtual void Direction(float3 const & dir) override;
-		using LightSource::Rotation;
-		virtual void Rotation(Quaternion const & quat) override;
-		void ModelMatrix(float4x4 const & model);
+		void BindSceneNode(SceneNode* node) override;
+
+		void MainThreadUpdate(float app_time, float elapsed_time) override;
 
 		virtual TexturePtr const & ProjectiveTexture() const override;
 		virtual void ProjectiveTexture(TexturePtr const & tex) override;
@@ -172,16 +157,14 @@ namespace KlayGE
 	class KLAYGE_CORE_API SpotLightSource : public LightSource
 	{
 	public:
+		BOOST_TYPE_INDEX_REGISTER_RUNTIME_CLASS((LightSource))
+
 		SpotLightSource();
 		virtual ~SpotLightSource();
 
-		using LightSource::Position;
-		virtual void Position(float3 const & pos) override;
-		using LightSource::Direction;
-		virtual void Direction(float3 const & dir) override;
-		using LightSource::Rotation;
-		virtual void Rotation(Quaternion const & quat) override;
-		virtual void ModelMatrix(float4x4 const & model) override;
+		void BindSceneNode(SceneNode* node) override;
+
+		void MainThreadUpdate(float app_time, float elapsed_time) override;
 
 		virtual float CosInnerAngle() const override;
 		virtual void InnerAngle(float angle) override;
@@ -212,25 +195,22 @@ namespace KlayGE
 	class KLAYGE_CORE_API DirectionalLightSource : public LightSource
 	{
 	public:
+		BOOST_TYPE_INDEX_REGISTER_RUNTIME_CLASS((LightSource))
+
 		DirectionalLightSource();
 		virtual ~DirectionalLightSource();
 
-		using LightSource::Attrib;
-		virtual void Attrib(int32_t attrib) override;
-	};
+		void BindSceneNode(SceneNode* node) override;
 
-	class KLAYGE_CORE_API SunLightSource : public LightSource
-	{
-	public:
-		SunLightSource();
-		virtual ~SunLightSource();
+		void MainThreadUpdate(float app_time, float elapsed_time) override;
 
 		using LightSource::Attrib;
 		virtual void Attrib(int32_t attrib) override;
 
 		virtual CameraPtr const & SMCamera(uint32_t index) const override;
 
-		void UpdateSMCamera(Camera const & scene_camera);
+	protected:
+		void UpdateCamera();
 
 	protected:
 		CameraPtr sm_camera_;
@@ -239,6 +219,8 @@ namespace KlayGE
 	class KLAYGE_CORE_API SphereAreaLightSource : public PointLightSource
 	{
 	public:
+		BOOST_TYPE_INDEX_REGISTER_RUNTIME_CLASS((LightSource))
+
 		SphereAreaLightSource();
 		virtual ~SphereAreaLightSource();
 
@@ -252,6 +234,8 @@ namespace KlayGE
 	class KLAYGE_CORE_API TubeAreaLightSource : public PointLightSource
 	{
 	public:
+		BOOST_TYPE_INDEX_REGISTER_RUNTIME_CLASS((LightSource))
+
 		TubeAreaLightSource();
 		virtual ~TubeAreaLightSource();
 

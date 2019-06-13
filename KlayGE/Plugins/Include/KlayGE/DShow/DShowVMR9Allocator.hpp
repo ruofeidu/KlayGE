@@ -16,23 +16,17 @@
 #pragma once
 
 #include <KlayGE/PreDeclare.hpp>
-#include <KFL/Thread.hpp>
 
-#include <d3d9.h>
-#include <strmif.h>
-#include <vmr9.h>
-#include <vector>
 #include <atomic>
+#include <mutex>
+#include <vector>
 
 namespace KlayGE
 {
 	class DShowVMR9Allocator : public IVMRSurfaceAllocator9, IVMRImagePresenter9
 	{
 	public:
-		enum
-		{
-			USER_ID = 0xBAFEDCBA
-		};
+		static uint64_t constexpr USER_ID = 0xBAFEDCBA;
 
 	public:
 		explicit DShowVMR9Allocator(HWND wnd);
@@ -43,30 +37,30 @@ namespace KlayGE
 				/* [in] */ DWORD_PTR dwUserID,
 				/* [in] */ VMR9AllocationInfo *lpAllocInfo,
 				/* [out][in] */ DWORD *lpNumBuffers);
-	            
+
 		virtual HRESULT STDMETHODCALLTYPE TerminateDevice( 
 			/* [in] */ DWORD_PTR dwID);
-	    
+
 		virtual HRESULT STDMETHODCALLTYPE GetSurface( 
 			/* [in] */ DWORD_PTR dwUserID,
 			/* [in] */ DWORD SurfaceIndex,
 			/* [in] */ DWORD SurfaceFlags,
 			/* [out] */ IDirect3DSurface9 **lplpSurface);
-	    
+
 		virtual HRESULT STDMETHODCALLTYPE AdviseNotify( 
 			/* [in] */ IVMRSurfaceAllocatorNotify9 *lpIVMRSurfAllocNotify);
 
 		// IVMRImagePresenter9
 		virtual HRESULT STDMETHODCALLTYPE StartPresenting( 
 			/* [in] */ DWORD_PTR dwUserID);
-	    
+
 		virtual HRESULT STDMETHODCALLTYPE StopPresenting( 
 			/* [in] */ DWORD_PTR dwUserID);
-	    
+
 		virtual HRESULT STDMETHODCALLTYPE PresentImage( 
 			/* [in] */ DWORD_PTR dwUserID,
 			/* [in] */ VMR9PresentationInfo *lpPresInfo);
-	    
+
 		// IUnknown
 		virtual HRESULT STDMETHODCALLTYPE QueryInterface( 
 			REFIID riid,

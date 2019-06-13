@@ -29,6 +29,7 @@
  */
 
 #include <DXBC2GLSL/DXBC2GLSL.hpp>
+#include <KFL/CustomizedStreamBuf.hpp>
 #include <DXBC2GLSL/DXBC.hpp>
 #include <DXBC2GLSL/GLSLGen.hpp>
 #include <sstream>
@@ -41,14 +42,14 @@ namespace DXBC2GLSL
 	}
 
 	void DXBC2GLSL::FeedDXBC(void const * dxbc_data,
-			bool has_gs, ShaderTessellatorPartitioning ds_partitioning, ShaderTessellatorOutputPrimitive ds_output_primitive,
+			bool has_gs, bool has_ps, ShaderTessellatorPartitioning ds_partitioning, ShaderTessellatorOutputPrimitive ds_output_primitive,
 			GLSLVersion version)
 	{
-		this->FeedDXBC(dxbc_data, has_gs, ds_partitioning, ds_output_primitive, version, this->DefaultRules(version));
+		this->FeedDXBC(dxbc_data, has_gs, has_ps, ds_partitioning, ds_output_primitive, version, this->DefaultRules(version));
 	}
 
 	void DXBC2GLSL::FeedDXBC(void const * dxbc_data,
-			bool has_gs, ShaderTessellatorPartitioning ds_partitioning, ShaderTessellatorOutputPrimitive ds_output_primitive, 
+			bool has_gs, bool has_ps, ShaderTessellatorPartitioning ds_partitioning, ShaderTessellatorOutputPrimitive ds_output_primitive,
 			GLSLVersion version, uint32_t glsl_rules)
 	{
 		dxbc_ = DXBCParse(dxbc_data);
@@ -58,13 +59,12 @@ namespace DXBC2GLSL
 			{
 				shader_ = ShaderParse(*dxbc_);
 
-				std::stringstream ss;
+				KlayGE::StringOutputStreamBuf glsl_buff(glsl_);
+				std::ostream ss(&glsl_buff);
 
 				GLSLGen converter;
-				converter.FeedDXBC(shader_, has_gs, ds_partitioning, ds_output_primitive, version, glsl_rules);
+				converter.FeedDXBC(shader_, has_gs, has_ps, ds_partitioning, ds_output_primitive, version, glsl_rules);
 				converter.ToGLSL(ss);
-
-				glsl_ = ss.str();
 			}
 		}
 	}

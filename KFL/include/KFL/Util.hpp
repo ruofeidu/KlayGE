@@ -34,6 +34,9 @@
 #pragma once
 
 #include <KFL/PreDeclare.hpp>
+#include <KFL/CXX17.hpp>
+#include <KFL/CXX17/string_view.hpp>
+#include <KFL/CXX2a/endian.hpp>
 
 #include <string>
 #include <functional>
@@ -41,6 +44,9 @@
 #include <boost/assert.hpp>
 
 #define KFL_UNUSED(x) (void)(x)
+
+// The opposite side of "explicit", for tracking purpose
+#define KFL_IMPLICIT
 
 #include <KFL/Log.hpp>
 
@@ -56,7 +62,7 @@ namespace KlayGE
 {
 	// 设第n bit为1
 	inline uint32_t
-	SetMask(uint32_t n)
+	SetMask(uint32_t n) noexcept
 		{ return 1UL << n; }
 	template <uint32_t n>
 	struct Mask
@@ -66,7 +72,7 @@ namespace KlayGE
 
 	// 取数中的第 n bit
 	inline uint32_t
-	GetBit(uint32_t x, uint32_t n)
+	GetBit(uint32_t x, uint32_t n) noexcept
 		{ return (x >> n) & 1; }
 	// 置数中的第 n bit为1
 	inline uint32_t
@@ -75,34 +81,34 @@ namespace KlayGE
 
 	// 取低字节
 	inline uint16_t
-	LO_U8(uint16_t x)
+	LO_U8(uint16_t x) noexcept
 		{ return x & 0xFF; }
 	// 取高字节
 	inline uint16_t
-	HI_U8(uint16_t x)
+	HI_U8(uint16_t x) noexcept
 		{ return x >> 8; }
 
 	// 取低字
 	inline uint32_t
-	LO_U16(uint32_t x)
+	LO_U16(uint32_t x) noexcept
 		{ return x & 0xFFFF; }
 	// 取高字
 	inline uint32_t
-	HI_U16(uint32_t x)
+	HI_U16(uint32_t x) noexcept
 		{ return x >> 16; }
 
 	// 高低字节交换
 	inline uint16_t
-	HI_LO_SwapU8(uint16_t x)
+	HI_LO_SwapU8(uint16_t x) noexcept
 		{ return (LO_U8(x) << 8) | HI_U8(x); }
 	// 高低字交换
 	inline uint32_t
-	HI_LO_SwapU16(uint32_t x)
+	HI_LO_SwapU16(uint32_t x) noexcept
 		{ return (LO_U16(x) << 16) | HI_U16(x); }
 
 	// 获得n位都是1的掩码
 	inline uint32_t
-	MakeMask(uint32_t n)
+	MakeMask(uint32_t n) noexcept
 		{ return (1UL << (n + 1)) - 1; }
 
 	// 产生FourCC常量
@@ -113,71 +119,91 @@ namespace KlayGE
 	};
 
 	// Unicode函数, 用于string, wstring之间的转换
-	std::string& Convert(std::string& strDest, std::string const & strSrc);
-	std::string& Convert(std::string& strDest, std::wstring const & wstrSrc);
-	std::wstring& Convert(std::wstring& wstrDest, std::string const & strSrc);
-	std::wstring& Convert(std::wstring& wstrDest, std::wstring const & wstrSrc);
+	std::string& Convert(std::string& dest, std::string_view src);
+	std::string& Convert(std::string& dest, std::wstring_view src);
+	std::wstring& Convert(std::wstring& dest, std::string_view src);
+	std::wstring& Convert(std::wstring& dest, std::wstring_view src);
 
 	// 暂停几毫秒
 	void Sleep(uint32_t ms);
 
 	// Endian的转换
 	template <int size>
-	void EndianSwitch(void* p);
+	void EndianSwitch(void* p) noexcept;
 
 	template <typename T>
-	T Native2BE(T x)
+	T Native2BE(T x) noexcept
 	{
-#ifdef KLAYGE_LITTLE_ENDIAN
-		EndianSwitch<sizeof(T)>(&x);
-#else
-		KFL_UNUSED(x);
-#endif
+		KLAYGE_IF_CONSTEXPR (std::endian::native == std::endian::little)
+		{
+			EndianSwitch<sizeof(T)>(&x);
+		}
 		return x;
 	}
 	template <typename T>
-	T Native2LE(T x)
+	T Native2LE(T x) noexcept
 	{
-#ifdef KLAYGE_LITTLE_ENDIAN
-		KFL_UNUSED(x);
-#else
-		EndianSwitch<sizeof(T)>(&x);
-#endif
+		KLAYGE_IF_CONSTEXPR (std::endian::native == std::endian::big)
+		{
+			EndianSwitch<sizeof(T)>(&x);
+		}
 		return x;
 	}
 
 	template <typename T>
-	T BE2Native(T x)
+	T BE2Native(T x) noexcept
 	{
 		return Native2BE(x);
 	}
 	template <typename T>
-	T LE2Native(T x)
+	T LE2Native(T x) noexcept
 	{
 		return Native2LE(x);
 	}
 
 
 	template <typename To, typename From>
-	inline To
-	checked_cast(From p)
+	inline To checked_cast(From* p) noexcept
+	{
+		BOOST_ASSERT(dynamic_cast<To>(p) == static_cast<To>(p));
+		return static_cast<To>(p);
+	}
+	
+	template <typename To, typename From>
+	inline To checked_cast(From const* p) noexcept
 	{
 		BOOST_ASSERT(dynamic_cast<To>(p) == static_cast<To>(p));
 		return static_cast<To>(p);
 	}
 
 	template <typename To, typename From>
-	inline std::shared_ptr<To>
-	checked_pointer_cast(std::shared_ptr<From> const & p)
+	inline typename std::add_rvalue_reference<To>::type checked_cast(From& p) noexcept
 	{
-		BOOST_ASSERT(std::dynamic_pointer_cast<To>(p) == std::static_pointer_cast<To>(p));
+		typedef typename std::remove_reference<To>::type RawToType;
+		BOOST_ASSERT(dynamic_cast<RawToType*>(&p) == static_cast<RawToType*>(&p));
+		return static_cast<RawToType&>(p);
+	}
+
+	template <typename To, typename From>
+	inline typename std::add_rvalue_reference<To const>::type checked_cast(From const& p) noexcept
+	{
+		typedef typename std::remove_reference<To const>::type RawToType;
+		BOOST_ASSERT(dynamic_cast<RawToType const*>(&p) == static_cast<RawToType const*>(&p));
+		return static_cast<RawToType const&>(p);
+	}
+
+	template <typename To, typename From>
+	inline std::shared_ptr<To>
+	checked_pointer_cast(std::shared_ptr<From> const & p) noexcept
+	{
+		BOOST_ASSERT(dynamic_cast<To*>(p.get()) == static_cast<To*>(p.get()));
 		return std::static_pointer_cast<To>(p);
 	}
 
 	uint32_t LastError();
 
 	std::string ReadShortString(ResIdentifierPtr const & res);
-	void WriteShortString(std::ostream& os, std::string const & str);
+	void WriteShortString(std::ostream& os, std::string_view str);
 
 	template <typename T, typename... Args>
 	inline std::shared_ptr<T> MakeSharedPtr(Args&&... args)

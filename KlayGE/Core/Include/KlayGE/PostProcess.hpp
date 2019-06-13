@@ -27,23 +27,23 @@
 
 #include <vector>
 
-#include <boost/noncopyable.hpp>
-
 #include <KlayGE/PreDeclare.hpp>
+#include <KFL/CXX17/string_view.hpp>
+#include <KFL/ArrayRef.hpp>
 #include <KlayGE/RenderFactory.hpp>
 #include <KlayGE/FrameBuffer.hpp>
 #include <KlayGE/RenderableHelper.hpp>
 
 namespace KlayGE
 {
-	class KLAYGE_CORE_API PostProcess : boost::noncopyable, public RenderableHelper
+	class KLAYGE_CORE_API PostProcess : public Renderable
 	{
 	public:
-		explicit PostProcess(std::wstring const & name);
-		PostProcess(std::wstring const & name,
-			std::vector<std::string> const & param_names,
-			std::vector<std::string> const & input_pin_names,
-			std::vector<std::string> const & output_pin_names,
+		PostProcess(std::wstring_view name, bool volumetric);
+		PostProcess(std::wstring_view name, bool volumetric,
+			ArrayRef<std::string> param_names,
+			ArrayRef<std::string> input_pin_names,
+			ArrayRef<std::string> output_pin_names,
 			RenderEffectPtr const & effect, RenderTechnique* tech);
 		virtual ~PostProcess()
 		{
@@ -54,7 +54,7 @@ namespace KlayGE
 		void Technique(RenderEffectPtr const & effect, RenderTechnique* tech);
 
 		virtual uint32_t NumParams() const;
-		virtual uint32_t ParamByName(std::string const & name) const;
+		virtual uint32_t ParamByName(std::string_view name) const;
 		virtual std::string const & ParamName(uint32_t index) const;
 		virtual void SetParam(uint32_t index, bool const & value);
 		virtual void SetParam(uint32_t index, uint32_t const & value);
@@ -114,16 +114,22 @@ namespace KlayGE
 		virtual void GetParam(uint32_t index, std::vector<float4x4>& value);
 
 		virtual uint32_t NumInputPins() const;
-		virtual uint32_t InputPinByName(std::string const & name) const;
+		virtual uint32_t InputPinByName(std::string_view name) const;
 		virtual std::string const & InputPinName(uint32_t index) const;
 		virtual void InputPin(uint32_t index, TexturePtr const & tex);
+		virtual void InputPin(uint32_t index, ShaderResourceViewPtr const & tex);
 		virtual TexturePtr const & InputPin(uint32_t index) const;
 
 		virtual uint32_t NumOutputPins() const;
-		virtual uint32_t OutputPinByName(std::string const & name) const;
+		virtual uint32_t OutputPinByName(std::string_view name) const;
 		virtual std::string const & OutputPinName(uint32_t index) const;
 		virtual void OutputPin(uint32_t index, TexturePtr const & tex, int level = 0, int array_index = 0, int face = 0);
 		virtual TexturePtr const & OutputPin(uint32_t index) const;
+
+		bool Volumetric() const
+		{
+			return volumetric_;
+		}
 
 		void CSPixelPerThreadX(uint32_t x)
 		{
@@ -164,15 +170,18 @@ namespace KlayGE
 		void UpdateBinds();
 
 	protected:
+		bool volumetric_;
+
 		bool cs_based_;
 		uint32_t cs_pixel_per_thread_x_;
 		uint32_t cs_pixel_per_thread_y_;
 		uint32_t cs_pixel_per_thread_z_;
 
-		std::vector<std::pair<std::string, TexturePtr>> input_pins_;
+		std::vector<std::pair<std::string, ShaderResourceViewPtr>> input_pins_;
 		std::vector<std::pair<std::string, TexturePtr>> output_pins_;
 		uint32_t num_bind_output_;
 		std::vector<std::pair<std::string, RenderEffectParameter*>> params_;
+		RenderEffectParameter* pp_mvp_param_;
 
 		FrameBufferPtr frame_buffer_;
 
@@ -183,8 +192,8 @@ namespace KlayGE
 		RenderEffectParameter* inv_width_height_ep_;
 	};
 
-	KLAYGE_CORE_API PostProcessPtr SyncLoadPostProcess(std::string const & ppml_name, std::string const & pp_name);
-	KLAYGE_CORE_API PostProcessPtr ASyncLoadPostProcess(std::string const & ppml_name, std::string const & pp_name);
+	KLAYGE_CORE_API PostProcessPtr SyncLoadPostProcess(std::string_view ppml_name, std::string_view pp_name);
+	KLAYGE_CORE_API PostProcessPtr ASyncLoadPostProcess(std::string_view ppml_name, std::string_view pp_name);
 
 
 	class KLAYGE_CORE_API PostProcessChain : public PostProcess
@@ -192,9 +201,9 @@ namespace KlayGE
 	public:
 		explicit PostProcessChain(std::wstring const & name);
 		PostProcessChain(std::wstring const & name,
-			std::vector<std::string> const & param_names,
-			std::vector<std::string> const & input_pin_names,
-			std::vector<std::string> const & output_pin_names,
+			ArrayRef<std::string> param_names,
+			ArrayRef<std::string> input_pin_names,
+			ArrayRef<std::string> output_pin_names,
 			RenderEffectPtr const & effect, RenderTechnique* tech);
 		virtual ~PostProcessChain()
 		{
@@ -205,7 +214,7 @@ namespace KlayGE
 		PostProcessPtr const & GetPostProcess(uint32_t index) const;
 
 		virtual uint32_t NumParams() const;
-		virtual uint32_t ParamByName(std::string const & name) const;
+		virtual uint32_t ParamByName(std::string_view name) const;
 		virtual std::string const & ParamName(uint32_t index) const;
 		virtual void SetParam(uint32_t index, bool const & value);
 		virtual void SetParam(uint32_t index, uint32_t const & value);
@@ -265,13 +274,13 @@ namespace KlayGE
 		virtual void GetParam(uint32_t index, std::vector<float4x4>& value);
 
 		virtual uint32_t NumInputPins() const;
-		virtual uint32_t InputPinByName(std::string const & name) const;
+		virtual uint32_t InputPinByName(std::string_view name) const;
 		virtual std::string const & InputPinName(uint32_t index) const;
 		virtual void InputPin(uint32_t index, TexturePtr const & tex);
 		virtual TexturePtr const & InputPin(uint32_t index) const;
 
 		virtual uint32_t NumOutputPins() const;
-		virtual uint32_t OutputPinByName(std::string const & name) const;
+		virtual uint32_t OutputPinByName(std::string_view name) const;
 		virtual std::string const & OutputPinName(uint32_t index) const;
 		virtual void OutputPin(uint32_t index, TexturePtr const & tex, int level = 0, int array_index = 0, int face = 0);
 		virtual TexturePtr const & OutputPin(uint32_t index) const;
@@ -413,7 +422,7 @@ namespace KlayGE
 			{
 				RenderFactory& rf = Context::Instance().RenderFactoryInstance();
 				TexturePtr blur_x = rf.MakeTexture2D(tex->Width(0), tex->Height(0), 1, 1, tex->Format(),
-						1, 0, EAH_GPU_Read | EAH_GPU_Write, nullptr);
+						1, 0, EAH_GPU_Read | EAH_GPU_Write);
 				pp_chain_[0]->OutputPin(0, blur_x);
 				pp_chain_[1]->InputPin(0, blur_x);
 			}

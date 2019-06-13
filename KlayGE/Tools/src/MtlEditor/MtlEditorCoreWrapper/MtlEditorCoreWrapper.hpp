@@ -13,11 +13,11 @@ namespace KlayGE
 		enum class TextureSlot
 		{
 			TS_Albedo = RenderMaterial::TS_Albedo,
-			TS_Metalness = RenderMaterial::TS_Metalness,
-			TS_Glossiness = RenderMaterial::TS_Glossiness,
+			TS_MetalnessGlossiness = RenderMaterial::TS_MetalnessGlossiness,
 			TS_Emissive = RenderMaterial::TS_Emissive,
 			TS_Normal = RenderMaterial::TS_Normal,
-			TS_Height = RenderMaterial::TS_Height
+			TS_Height = RenderMaterial::TS_Height,
+			TS_Occlusion = RenderMaterial::TS_Occlusion
 		};
 
 	public:
@@ -45,6 +45,7 @@ namespace KlayGE
 		float ModelFrameRate();
 
 		void SkinningOn(int on);
+		void SkeletonOn(int on);
 		void LightOn(int on);
 		void FPSCameraOn(int on);
 		void LineModeOn(int on);
@@ -55,6 +56,9 @@ namespace KlayGE
 		void MouseUp(int x, int y, uint32_t button);
 		void MouseDown(int x, int y, uint32_t button);
 		void KeyPress(int key);
+
+		uint32_t NumLods();
+		void ActiveLod(int lod);
 
 		uint32_t NumMeshes();
 		System::String^ MeshName(uint32_t index);
@@ -82,6 +86,7 @@ namespace KlayGE
 		bool TransparentMaterial(uint32_t mtl_id);
 		float AlphaTestMaterial(uint32_t mtl_id);
 		bool SSSMaterial(uint32_t mtl_id);
+		bool TwoSidedMaterial(uint32_t mtl_id);
 
 		void MaterialID(uint32_t mesh_id, uint32_t mtl_id);
 		void MaterialName(uint32_t mtl_id, System::String^ name);
@@ -101,6 +106,7 @@ namespace KlayGE
 		void TransparentMaterial(uint32_t mtl_id, bool value);
 		void AlphaTestMaterial(uint32_t mtl_id, float value);
 		void SSSMaterial(uint32_t mtl_id, bool value);
+		void TwoSidedMaterial(uint32_t mtl_id, bool value);
 
 		uint32_t CopyMaterial(uint32_t mtl_id);
 		uint32_t ImportMaterial(System::String^ name);

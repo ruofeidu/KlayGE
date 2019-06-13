@@ -14,7 +14,6 @@
 /////////////////////////////////////////////////////////////////////////////////
 
 #include <KlayGE/KlayGE.hpp>
-#include <KFL/ThrowErr.hpp>
 #include <KFL/Math.hpp>
 #include <KlayGE/Context.hpp>
 #include <KlayGE/Texture.hpp>
@@ -35,9 +34,6 @@ namespace KlayGE
 {
 	OGLFrameBuffer::OGLFrameBuffer(bool off_screen)
 	{
-		left_ = 0;
-		top_ = 0;
-
 		if (off_screen)
 		{
 			if (glloader_GL_VERSION_4_5() || glloader_GL_ARB_direct_state_access())
@@ -61,7 +57,7 @@ namespace KlayGE
 		{
 			if (Context::Instance().RenderFactoryValid())
 			{
-				OGLRenderEngine& re = *checked_cast<OGLRenderEngine*>(&Context::Instance().RenderFactoryInstance().RenderEngineInstance());
+				auto& re = checked_cast<OGLRenderEngine&>(Context::Instance().RenderFactoryInstance().RenderEngineInstance());
 				re.DeleteFramebuffers(1, &fbo_);
 			}
 			else
@@ -79,7 +75,26 @@ namespace KlayGE
 
 	void OGLFrameBuffer::OnBind()
 	{
-		OGLRenderEngine& re = *checked_cast<OGLRenderEngine*>(&Context::Instance().RenderFactoryInstance().RenderEngineInstance());
+		if (views_dirty_)
+		{
+			if (fbo_ != 0)
+			{
+				gl_targets_.resize(rt_views_.size());
+				for (size_t i = 0; i < rt_views_.size(); ++ i)
+				{
+					gl_targets_[i] = static_cast<GLenum>(GL_COLOR_ATTACHMENT0 + i);
+				}
+			}
+			else
+			{
+				gl_targets_.resize(1);
+				gl_targets_[0] = GL_BACK_LEFT;
+			}
+
+			views_dirty_ = false;
+		}
+
+		auto& re = checked_cast<OGLRenderEngine&>(Context::Instance().RenderFactoryInstance().RenderEngineInstance());
 		re.BindFramebuffer(fbo_);
 
 		if (glloader_GL_VERSION_4_5() || glloader_GL_ARB_direct_state_access())
@@ -103,33 +118,29 @@ namespace KlayGE
 
 		if (fbo_ != 0)
 		{
-			re.EnableFramebufferSRGB(IsSRGB(clr_views_[0]->Format()));
-
-			std::vector<GLenum> targets(clr_views_.size());
-			for (size_t i = 0; i < clr_views_.size(); ++ i)
-			{
-				targets[i] = static_cast<GLenum>(GL_COLOR_ATTACHMENT0 + i);
-			}
-			glDrawBuffers(static_cast<GLsizei>(targets.size()), &targets[0]);
+			re.EnableFramebufferSRGB(IsSRGB(rt_views_[0]->Format()));
 		}
 		else
 		{
 			re.EnableFramebufferSRGB(false);
-
-			GLenum targets[] = { GL_BACK_LEFT };
-			glDrawBuffers(1, &targets[0]);
 		}
+
+		glDrawBuffers(static_cast<GLsizei>(gl_targets_.size()), &gl_targets_[0]);
+	}
+
+	void OGLFrameBuffer::OnUnbind()
+	{
 	}
 
 	void OGLFrameBuffer::Clear(uint32_t flags, Color const & clr, float depth, int32_t stencil)
 	{
-		OGLRenderEngine& re = *checked_cast<OGLRenderEngine*>(&Context::Instance().RenderFactoryInstance().RenderEngineInstance());
+		auto& re = checked_cast<OGLRenderEngine&>(Context::Instance().RenderFactoryInstance().RenderEngineInstance());
 
 		GLuint old_fbo = re.BindFramebuffer();
 		re.BindFramebuffer(fbo_);
 
-		DepthStencilStateDesc const & ds_desc = re.CurDSSObj()->GetDesc();
-		BlendStateDesc const & blend_desc = re.CurBSObj()->GetDesc();
+		DepthStencilStateDesc const & ds_desc = re.CurRenderStateObject()->GetDepthStencilStateDesc();
+		BlendStateDesc const & blend_desc = re.CurRenderStateObject()->GetBlendStateDesc();
 
 		if (flags & CBM_Color)
 		{
@@ -164,9 +175,9 @@ namespace KlayGE
 		{
 			if (fbo_ != 0)
 			{
-				for (size_t i = 0; i < clr_views_.size(); ++ i)
+				for (size_t i = 0; i < rt_views_.size(); ++ i)
 				{
-					if (clr_views_[i])
+					if (rt_views_[i])
 					{
 						glClearBufferfv(GL_COLOR, static_cast<GLint>(i), &clr[0]);
 					}
@@ -242,9 +253,9 @@ namespace KlayGE
 			{
 				if (flags & CBM_Color)
 				{
-					for (size_t i = 0; i < clr_views_.size(); ++ i)
+					for (size_t i = 0; i < rt_views_.size(); ++ i)
 					{
-						if (clr_views_[i])
+						if (rt_views_[i])
 						{
 							attachments.push_back(static_cast<GLenum>(GL_COLOR_ATTACHMENT0 + i));
 						}
@@ -252,14 +263,14 @@ namespace KlayGE
 				}
 				if (flags & CBM_Depth)
 				{
-					if (rs_view_)
+					if (ds_view_)
 					{
 						attachments.push_back(GL_DEPTH_ATTACHMENT);
 					}
 				}
 				if (flags & CBM_Stencil)
 				{
-					if (rs_view_)
+					if (ds_view_)
 					{
 						attachments.push_back(GL_STENCIL_ATTACHMENT);
 					}
@@ -287,7 +298,7 @@ namespace KlayGE
 			}
 			else
 			{
-				OGLRenderEngine& re = *checked_cast<OGLRenderEngine*>(&Context::Instance().RenderFactoryInstance().RenderEngineInstance());
+				auto& re = checked_cast<OGLRenderEngine&>(Context::Instance().RenderFactoryInstance().RenderEngineInstance());
 
 				GLuint old_fbo = re.BindFramebuffer();
 				re.BindFramebuffer(fbo_);

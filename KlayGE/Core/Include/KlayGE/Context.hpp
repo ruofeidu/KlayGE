@@ -33,12 +33,12 @@
 #include <string>
 #include <boost/assert.hpp>
 
-#ifdef KLAYGE_PLATFORM_ANDROID
-#include <android_native_app_glue.h>
-#endif
-
 #include <KlayGE/RenderSettings.hpp>
 #include <KFL/DllLoader.hpp>
+
+#ifdef KLAYGE_PLATFORM_ANDROID
+struct android_app;
+#endif
 
 namespace KlayGE
 {
@@ -59,7 +59,7 @@ namespace KlayGE
 		bool location_sensor;
 	};
 
-	class KLAYGE_CORE_API Context
+	class KLAYGE_CORE_API Context final : boost::noncopyable
 	{
 	public:
 		Context();
@@ -90,6 +90,10 @@ namespace KlayGE
 		void LoadScriptFactory(std::string const & sf_name);
 		void LoadSceneManager(std::string const & sm_name);
 		void LoadAudioDataSourceFactory(std::string const & adsf_name);
+
+#if KLAYGE_IS_DEV_PLATFORM
+		void LoadDevHelper();
+#endif
 
 		void AppInstance(App3DFramework& app)
 		{
@@ -153,6 +157,14 @@ namespace KlayGE
 			return deferred_rendering_layer_.get();
 		}
 
+#if KLAYGE_IS_DEV_PLATFORM
+		bool DevHelperValid() const
+		{
+			return dev_helper_.get() != nullptr;
+		}
+		DevHelper& DevHelperInstance();
+#endif
+
 		thread_pool& ThreadPool()
 		{
 			return *gtp_instance_;
@@ -182,6 +194,10 @@ namespace KlayGE
 		std::unique_ptr<AudioDataSourceFactory> audio_data_src_factory_;
 		std::unique_ptr<DeferredRenderingLayer> deferred_rendering_layer_;
 
+#if KLAYGE_IS_DEV_PLATFORM
+		std::unique_ptr<DevHelper> dev_helper_;
+#endif
+
 		DllLoader render_loader_;
 		DllLoader audio_loader_;
 		DllLoader input_loader_;
@@ -189,6 +205,10 @@ namespace KlayGE
 		DllLoader script_loader_;
 		DllLoader sm_loader_;
 		DllLoader ads_loader_;
+
+#if KLAYGE_IS_DEV_PLATFORM
+		DllLoader dev_helper_loader_;
+#endif
 
 		std::unique_ptr<thread_pool> gtp_instance_;
 	};

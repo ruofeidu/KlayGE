@@ -56,7 +56,14 @@ void DetectOSInfo(std::ostream& os)
 #if defined KLAYGE_PLATFORM_WINDOWS_DESKTOP
 	typedef NTSTATUS (WINAPI *RtlGetVersionFunc)(OSVERSIONINFOEXW* pVersionInformation);
 	HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+#if defined(KLAYGE_COMPILER_GCC) && (KLAYGE_COMPILER_VERSION >= 80)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-function-type"
+#endif
 	RtlGetVersionFunc RtlGetVersion = reinterpret_cast<RtlGetVersionFunc>(::GetProcAddress(ntdll, "RtlGetVersion"));
+#if defined(KLAYGE_COMPILER_GCC) && (KLAYGE_COMPILER_VERSION >= 80)
+#pragma GCC diagnostic pop
+#endif
 	OSVERSIONINFOEXW os_ver_info;
 	os_ver_info.dwOSVersionInfoSize = sizeof(os_ver_info);
 	RtlGetVersion(&os_ver_info);
@@ -191,13 +198,7 @@ void DetectOSInfo(std::ostream& os)
 		os << "SP " << os_ver_info.wServicePackMajor << '.' << os_ver_info.wServicePackMinor;
 	}
 #else
-#if defined KLAYGE_PLATFORM_WINDOWS_UWP
-	os << "Windows UWP";
-#elif defined KLAYGE_PLATFORM_WINDOWS_STORE
 	os << "Windows Store";
-#elif defined KLAYGE_PLATFORM_WINDOWS_PHONE
-	os << "Windows Phone";
-#endif
 
 	::GetNativeSystemInfo(&si);
 #endif
@@ -273,7 +274,15 @@ void DetectGpuInfo(std::ostream& os)
 		os << "Unknown GPU";
 		return;
 	}
-	CreateDXGIFactory1Func DynamicCreateDXGIFactory1 = (CreateDXGIFactory1Func)::GetProcAddress(dxgi, "CreateDXGIFactory1");
+#if defined(KLAYGE_COMPILER_GCC) && (KLAYGE_COMPILER_VERSION >= 80)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-function-type"
+#endif
+	CreateDXGIFactory1Func DynamicCreateDXGIFactory1
+		= reinterpret_cast<CreateDXGIFactory1Func>(::GetProcAddress(dxgi, "CreateDXGIFactory1"));
+#if defined(KLAYGE_COMPILER_GCC) && (KLAYGE_COMPILER_VERSION >= 80)
+#pragma GCC diagnostic pop
+#endif
 	if (!DynamicCreateDXGIFactory1)
 	{
 		os << "Unknown GPU";
@@ -358,7 +367,7 @@ void DetectMainboardInfo(std::ostream& os)
 		os << endl;
 
 		MemoryBank mem;
-		for (size_t i = 0; i < mem.SlotCount(); ++i)
+		for (size_t i = 0; i < mem.SlotCount(); ++ i)
 		{
 			if (mem[i].size != 0)
 			{
@@ -378,7 +387,7 @@ void DetectMainboardInfo(std::ostream& os)
 
 int main()
 {
-	std::stringstream ss;
+	std::ostringstream ss;
 
 	ss << "=== OS information ===" << endl;
 	DetectOSInfo(ss);

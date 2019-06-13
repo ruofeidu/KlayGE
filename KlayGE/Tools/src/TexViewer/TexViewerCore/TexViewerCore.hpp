@@ -21,8 +21,6 @@ namespace KlayGE
 	public:
 		explicit TexViewerCore(void* native_wnd);
 
-		bool ConfirmDevice() const override;
-
 		void Resize(uint32_t width, uint32_t height);
 
 		void OpenTexture(std::string const & name);
@@ -59,7 +57,7 @@ namespace KlayGE
 	private:
 		FontPtr font_;
 
-		SceneObjectPtr quad_so_;
+		SceneNodePtr quad_so_;
 		RenderablePtr quad_;
 		TexturePtr texture_original_;
 		TexturePtr texture_display_;

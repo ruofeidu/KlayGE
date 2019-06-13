@@ -95,6 +95,9 @@
 #ifndef __deref_opt_out_bcount
 	#define __deref_opt_out_bcount(size)
 #endif
+#ifndef __reserved
+	#define __reserved
+#endif
 
 #ifndef _Out_writes_bytes_opt_
 	#define _Out_writes_bytes_opt_(size)
@@ -207,6 +210,9 @@
 #endif
 #ifndef _Field_size_bytes_full_
 	#define _Field_size_bytes_full_(size)
+#endif
+#ifndef _Field_size_full_opt_
+	#define _Field_size_full_opt_(size)
 #endif
 
 #endif

@@ -28,18 +28,20 @@
  * from http://www.klayge.org/licensing/.
  */
 
-#ifndef _DEFERREDRENDERINGLAYER_HPP
-#define _DEFERREDRENDERINGLAYER_HPP
+#ifndef KLAYGE_CORE_DEFERRED_RENDERING_LAYER_HPP
+#define KLAYGE_CORE_DEFERRED_RENDERING_LAYER_HPP
 
 #pragma once
 
 #include <KlayGE/PreDeclare.hpp>
 
 #include <array>
+#include <functional>
 
 #include <KlayGE/Light.hpp>
 #include <KlayGE/IndirectLightingLayer.hpp>
 #include <KlayGE/CascadedShadowLayer.hpp>
+#include <KlayGE/Renderable.hpp>
 
 #define TRIDITIONAL_DEFERRED 0
 #define LIGHT_INDEXED_DEFERRED 1
@@ -55,7 +57,8 @@ namespace KlayGE
 		VPAM_NoTransparencyFront = 1UL << 3,
 		VPAM_NoSimpleForward = 1UL << 4,
 		VPAM_NoGI = 1UL << 5,
-		VPAM_NoSSVO = 1UL << 6
+		VPAM_NoSSVO = 1UL << 6,
+		VPAM_NoDoF = 1UL << 7
 	};
 
 	struct PerViewport
@@ -68,18 +71,27 @@ namespace KlayGE
 		uint32_t attrib;
 
 		FrameBufferPtr frame_buffer;
+		uint32_t sample_count = 1;
+		uint32_t sample_quality = 0;
 
 		std::array<bool, PTB_None> g_buffer_enables;
 
-		FrameBufferPtr g_buffer;
+		FrameBufferPtr g_buffer_fb;
+		FrameBufferPtr g_buffer_resolved_fb;
 		TexturePtr g_buffer_rt0_tex;
 		TexturePtr g_buffer_rt1_tex;
 		TexturePtr g_buffer_ds_tex;
 		TexturePtr g_buffer_depth_tex;
+		TexturePtr g_buffer_resolved_rt0_tex;
+		TexturePtr g_buffer_resolved_rt1_tex;
+		TexturePtr g_buffer_resolved_depth_tex;
 		TexturePtr g_buffer_rt0_backup_tex;
 #if DEFAULT_DEFERRED == LIGHT_INDEXED_DEFERRED
 		std::vector<TexturePtr> g_buffer_min_max_depth_texs;
+		ShaderResourceViewPtr g_buffer_stencil_srv;
 #endif
+		std::vector<TexturePtr> g_buffer_vdm_max_ds_texs;
+		std::vector<DepthStencilViewPtr> g_buffer_vdm_max_ds_views;
 
 		FrameBufferPtr shadowing_fb;
 		TexturePtr shadowing_tex;
@@ -89,6 +101,11 @@ namespace KlayGE
 
 		FrameBufferPtr reflection_fb;
 		TexturePtr reflection_tex;
+
+		FrameBufferPtr vdm_fb;
+		TexturePtr vdm_color_tex;
+		TexturePtr vdm_transition_tex;
+		TexturePtr vdm_count_tex;
 
 		FrameBufferPtr shading_fb;
 		TexturePtr shading_tex;
@@ -100,7 +117,12 @@ namespace KlayGE
 		std::array<TexturePtr, 2> merged_shading_texs;
 		std::array<FrameBufferPtr, 2> merged_depth_fbs;
 		std::array<TexturePtr, 2> merged_depth_texs;
+		std::array<TexturePtr, 2> merged_shading_resolved_texs;
+		std::array<FrameBufferPtr, 2> merged_depth_resolved_fbs;
+		std::array<TexturePtr, 2> merged_depth_resolved_texs;
 		uint32_t curr_merged_buffer_index;
+
+		TexturePtr dof_tex;
 
 		TexturePtr small_ssvo_tex;
 		bool ssvo_enabled;
@@ -121,14 +143,37 @@ namespace KlayGE
 		TexturePtr light_index_tex;
 
 		TexturePtr temp_shading_tex;
+		FrameBufferPtr temp_shading_fb;
 
-		TexturePtr lighting_mask_tex;
-		FrameBufferPtr lighting_mask_fb;
+		TexturePtr temp_shading_tex_array;
+
+		TexturePtr multi_sample_mask_tex;
+
+		TexturePtr lights_start_tex;
+		TexturePtr intersected_light_indices_tex;
 #endif
 	};
 
-	class KLAYGE_CORE_API DeferredRenderingLayer
+	class KLAYGE_CORE_API DeferredRenderingLayer : boost::noncopyable
 	{
+		class DeferredRenderingJob : boost::noncopyable
+		{
+		public:
+			explicit DeferredRenderingJob(std::function<uint32_t()> const & job_func)
+				: func_(job_func)
+			{
+			}
+
+			uint32_t Run()
+			{
+				return func_();
+			}
+
+		private:
+			std::function<uint32_t()> func_;
+		};
+
+
 	public:
 		enum DisplayType
 		{
@@ -151,7 +196,7 @@ namespace KlayGE
 	public:
 		DeferredRenderingLayer();
 
-		static bool ConfirmDevice();
+		static void Register();
 
 		void Suspend();
 		void Resume();
@@ -165,10 +210,14 @@ namespace KlayGE
 		void TranslucencyStrength(float strength);
 		void SSREnabled(bool ssr);
 		void TemporalAAEnabled(bool taa);
+		void DepthOfFieldEnabled(bool dof, bool bokeh);
+		void DepthFocus(float plane, float range);
+		void BokehLuminanceThreshold(float lum_threshold);
 
 		void AddDecal(RenderDecalPtr const & decal);
 
 		void SetupViewport(uint32_t index, FrameBufferPtr const & fb, uint32_t attrib);
+		void SetupViewport(uint32_t index, FrameBufferPtr const & fb, uint32_t attrib, uint32_t sample_count, uint32_t sample_quality);
 		void EnableViewport(uint32_t index, bool enable);
 		uint32_t Update(uint32_t pass);
 
@@ -177,14 +226,7 @@ namespace KlayGE
 			atmospheric_pp_ = pp;
 		}
 
-		RenderEffectPtr const & GBufferEffect() const
-		{
-			return g_buffer_effect_;
-		}
-		RenderEffectPtr const & GBufferSkinningEffect() const
-		{
-			return g_buffer_skinning_effect_;
-		}
+		RenderEffectPtr const & GBufferEffect(RenderMaterial const * material, bool line, bool skinning) const;
 
 #if DEFAULT_DEFERRED == TRIDITIONAL_DEFERRED
 		TexturePtr const & LightingTex(uint32_t vp) const
@@ -200,17 +242,33 @@ namespace KlayGE
 		{
 			return viewports_[vp].merged_shading_texs[viewports_[vp].curr_merged_buffer_index];
 		}
+		TexturePtr const & CurrFrameResolvedShadingTex(uint32_t vp) const
+		{
+			return viewports_[vp].merged_shading_resolved_texs[viewports_[vp].curr_merged_buffer_index];
+		}
 		TexturePtr const & CurrFrameDepthTex(uint32_t vp) const
 		{
 			return viewports_[vp].merged_depth_texs[viewports_[vp].curr_merged_buffer_index];
+		}
+		TexturePtr const & CurrFrameResolvedDepthTex(uint32_t vp) const
+		{
+			return viewports_[vp].merged_depth_resolved_texs[viewports_[vp].curr_merged_buffer_index];
 		}
 		TexturePtr const & PrevFrameShadingTex(uint32_t vp) const
 		{
 			return viewports_[vp].merged_shading_texs[!viewports_[vp].curr_merged_buffer_index];
 		}
+		TexturePtr const & PrevFrameResolvedShadingTex(uint32_t vp) const
+		{
+			return viewports_[vp].merged_shading_resolved_texs[!viewports_[vp].curr_merged_buffer_index];
+		}
 		TexturePtr const & PrevFrameDepthTex(uint32_t vp) const
 		{
 			return viewports_[vp].merged_depth_texs[!viewports_[vp].curr_merged_buffer_index];
+		}
+		TexturePtr const & PrevFrameResolvedDepthTex(uint32_t vp) const
+		{
+			return viewports_[vp].merged_depth_resolved_texs[!viewports_[vp].curr_merged_buffer_index];
 		}
 
 		TexturePtr const & SmallSSVOTex(uint32_t vp) const
@@ -230,6 +288,18 @@ namespace KlayGE
 		{
 			return viewports_[vp].g_buffer_depth_tex;
 		}
+		TexturePtr const & GBufferResolvedRT0Tex(uint32_t vp) const
+		{
+			return viewports_[vp].g_buffer_resolved_rt0_tex;
+		}
+		TexturePtr const & GBufferResolvedRT1Tex(uint32_t vp) const
+		{
+			return viewports_[vp].g_buffer_resolved_rt1_tex;
+		}
+		TexturePtr const & ResolvedDepthTex(uint32_t vp) const
+		{
+			return viewports_[vp].g_buffer_resolved_depth_tex;
+		}
 		TexturePtr const & GBufferRT0BackupTex(uint32_t vp) const
 		{
 			return viewports_[vp].g_buffer_rt0_backup_tex;
@@ -243,6 +313,15 @@ namespace KlayGE
 		uint32_t ActiveViewport() const
 		{
 			return active_viewport_;
+		}
+
+		uint32_t ViewportSampleCount(uint32_t vp) const
+		{
+			return viewports_[vp].sample_count;
+		}
+		uint32_t ViewportSampleQuality(uint32_t vp) const
+		{
+			return viewports_[vp].sample_quality;
 		}
 
 		void DisplayIllum(int illum);
@@ -310,6 +389,8 @@ namespace KlayGE
 #endif
 
 	private:
+		static bool ConfirmDevice();
+
 		void SetupViewportGI(uint32_t vp, bool ssgi_enable);
 		void AccumulateToLightingTex(PerViewport const & pvp, PassTargetBuffer pass_tb);
 
@@ -335,9 +416,9 @@ namespace KlayGE
 		void PrepareLightCamera(PerViewport const & pvp, LightSource const & light,
 			int32_t index_in_pass, PassType pass_type);
 		void PostGenerateShadowMap(PerViewport const & pvp, int32_t org_no, int32_t index_in_pass);
-		void UpdateShadowing(PerViewport const & pvp, int32_t index_in_pass);
+		void UpdateShadowing(PerViewport const & pvp);
 #if DEFAULT_DEFERRED == LIGHT_INDEXED_DEFERRED
-		void UpdateShadowingCS(PerViewport const & pvp, int32_t index_in_pass);
+		void UpdateShadowingCS(PerViewport const & pvp);
 #endif
 		void MergeIndirectLighting(PerViewport const & pvp, PassTargetBuffer pass_tb);
 		void MergeSSVO(PerViewport const & pvp, PassTargetBuffer pass_tb);
@@ -345,6 +426,7 @@ namespace KlayGE
 		void AddTranslucency(uint32_t light_index, PerViewport const & pvp, PassTargetBuffer pass_tb);
 		void AddSSS(PerViewport const & pvp);
 		void AddSSR(PerViewport const & pvp);
+		void AddVDM(PerViewport const & pvp);
 		void AddAtmospheric(PerViewport const & pvp);
 		void AddTAA(PerViewport const & pvp);
 
@@ -361,19 +443,48 @@ namespace KlayGE
 			std::vector<uint32_t>::const_iterator iter_beg, std::vector<uint32_t>::const_iterator iter_end);
 		void CreateDepthMinMaxMap(PerViewport const & pvp);
 
-		void UpdateTileBasedLighting(PerViewport const & pvp, PassTargetBuffer pass_tb);
+		void UpdateClusteredLighting(PerViewport const & pvp, PassTargetBuffer pass_tb);
 		void CreateDepthMinMaxMapCS(PerViewport const & pvp);
 #endif
+		void CreateVDMDepthMaxMap(PerViewport const & pvp);
+
+		uint32_t BeginPerfProfileDRJob(PerfRange& perf);
+		uint32_t EndPerfProfileDRJob(PerfRange& perf);
+		uint32_t RenderingStatsDRJob();
+		uint32_t GBufferGenerationDRJob(PerViewport& pvp, PassType pass_type);
+		uint32_t GBufferProcessingDRJob(PerViewport const & pvp);
+		uint32_t OpaqueGBufferProcessingDRJob(PerViewport const & pvp);
+		uint32_t ShadowMapGenerationDRJob(PerViewport const & pvp, PassType pass_type, int32_t org_no, int32_t index_in_pass);
+		uint32_t IndirectLightingDRJob(PerViewport const & pvp, int32_t org_no);
+		uint32_t ShadowingDRJob(PerViewport const & pvp, PassTargetBuffer pass_tb);
+		uint32_t ShadingDRJob(PerViewport const & pvp, PassType pass_type, int32_t index_in_pass);
+		uint32_t ReflectionDRJob(PerViewport const & pvp, PassType pass_type);
+		uint32_t VDMDRJob(PerViewport const & pvp);
+		uint32_t SpecialShadingDRJob(PerViewport& pvp, PassType pass_type);
+		uint32_t MergeShadingAndDepthDRJob(PerViewport& pvp, PassTargetBuffer pass_tb);
+		uint32_t PostEffectsDRJob(PerViewport& pvp);
+		uint32_t SimpleForwardDRJob(PerViewport& pvp);
+		uint32_t PostSimpleForwardDRJob(PerViewport& pvp);
+		uint32_t FinishingViewportDRJob(PerViewport& pvp);
+		uint32_t FinishingDRJob();
+		uint32_t SwitchViewportDRJob(uint32_t vp_index);
+		uint32_t VisualizeGBufferDRJob();
+		uint32_t VisualizeLightingDRJob();
+		uint32_t ClearOnlyDRJob();
 
 	private:
 		bool tex_array_support_;
 
-		RenderEffectPtr g_buffer_effect_;
-		RenderEffectPtr g_buffer_skinning_effect_;
+		// TODO: Remove the magic number
+		mutable RenderEffectPtr g_buffer_effects_[48];
+
 		RenderEffectPtr dr_effect_;
 #if DEFAULT_DEFERRED == LIGHT_INDEXED_DEFERRED
 		uint32_t light_batch_;
-		bool cs_tbdr_;
+		uint32_t num_depth_slices_;
+		std::vector<float> depth_slices_;
+		bool cs_cldr_;
+		bool typed_uav_;
 #endif
 
 		std::array<PerViewport, 8> viewports_;
@@ -381,18 +492,27 @@ namespace KlayGE
 
 		PostProcessPtr ssvo_pp_;
 		PostProcessPtr ssvo_blur_pp_;
+		PostProcessPtr ssvo_upsample_pp_;
 
-		PostProcessPtr sss_blur_pp_;
+		PostProcessPtr sss_blur_pps_[2];
 		bool sss_enabled_;
 
-		PostProcessPtr translucency_pp_;
+		PostProcessPtr translucency_pps_[2];
 		bool translucency_enabled_;
 
-		PostProcessPtr ssr_pp_;
+		PostProcessPtr ssr_pps_[2];
 		bool ssr_enabled_;
 
 		PostProcessPtr taa_pp_;
 		bool taa_enabled_;
+
+		PostProcessPtr vdm_composition_pp_;
+
+		KlayGE::PostProcessPtr depth_of_field_pp_;
+		bool depth_of_field_enabled_ = false;
+
+		KlayGE::PostProcessPtr bokeh_filter_pp_;
+		bool bokeh_filter_enabled_ = false;
 
 		float light_scale_;
 		RenderLayoutPtr rl_cone_;
@@ -405,18 +525,19 @@ namespace KlayGE
 		AABBox box_aabb_;
 
 		LightSourcePtr default_ambient_light_;
+		LightSourcePtr merged_ambient_light_;
 		std::vector<LightSource*> lights_;
 		std::vector<RenderablePtr> decals_;
 
-		std::vector<uint32_t> pass_scaned_;
+		std::vector<std::shared_ptr<DeferredRenderingJob>> jobs_;
+		std::vector<std::shared_ptr<DeferredRenderingJob>>::iterator curr_job_iter_;
 
 		std::array<std::array<RenderTechnique*, 5>, LightSource::LT_NumLightTypes> technique_shadows_;
 		RenderTechnique* technique_no_lighting_;
 		RenderTechnique* technique_shading_;
-		std::array<RenderTechnique*, 2> technique_merge_shadings_;
-		std::array<RenderTechnique*, 2> technique_merge_depths_;
+		RenderTechnique* technique_merge_shading_[2];
+		RenderTechnique* technique_merge_depth_[2];
 		RenderTechnique* technique_copy_shading_depth_;
-		RenderTechnique* technique_copy_depth_;
 #if DEFAULT_DEFERRED == TRIDITIONAL_DEFERRED
 		std::array<RenderTechnique*, LightSource::LT_NumLightTypes> technique_lights_;
 		RenderTechnique* technique_light_depth_only_;
@@ -425,8 +546,8 @@ namespace KlayGE
 		RenderTechnique* technique_draw_light_index_point_;
 		RenderTechnique* technique_draw_light_index_spot_;
 		RenderTechnique* technique_lidr_ambient_;
-		RenderTechnique* technique_lidr_sun_;
-		RenderTechnique* technique_lidr_directional_;
+		RenderTechnique* technique_lidr_directional_shadow_;
+		RenderTechnique* technique_lidr_directional_no_shadow_;
 		RenderTechnique* technique_lidr_point_shadow_;
 		RenderTechnique* technique_lidr_point_no_shadow_;
 		RenderTechnique* technique_lidr_spot_shadow_;
@@ -436,8 +557,14 @@ namespace KlayGE
 		RenderTechnique* technique_lidr_tube_area_shadow_;
 		RenderTechnique* technique_lidr_tube_area_no_shadow_;
 
-		RenderTechnique* technique_tbdr_shadowing_unified_;
-		RenderTechnique* technique_tbdr_unified_;
+		RenderTechnique* technique_cldr_shadowing_unified_[2];
+		RenderTechnique* technique_cldr_light_intersection_unified_;
+		RenderTechnique* technique_cldr_unified_[2];
+
+		RenderTechnique* technique_depth_to_tiled_min_max_[2];
+		RenderTechnique* technique_resolve_g_buffers_;
+		RenderTechnique* technique_resolve_merged_depth_;
+		RenderTechnique* technique_array_to_multiSample_;
 #endif
 		static uint32_t const MAX_NUM_SHADOWED_LIGHTS = 4;
 		static uint32_t const MAX_NUM_SHADOWED_SPOT_LIGHTS = 4;
@@ -459,13 +586,15 @@ namespace KlayGE
 		PostProcessPtr sm_filter_pp_;
 		PostProcessPtr csm_filter_pp_;
 		PostProcessPtr depth_to_esm_pp_;
-		PostProcessPtr depth_to_linear_pp_;
+		PostProcessPtr depth_to_linear_pps_[2];
 		PostProcessPtr depth_mipmap_pp_;
 
-		RenderEffectParameter* g_buffer_tex_param_;
-		RenderEffectParameter* g_buffer_1_tex_param_;
+		RenderEffectParameter* g_buffer_rt0_tex_param_;
+		RenderEffectParameter* g_buffer_rt1_tex_param_;
 		RenderEffectParameter* depth_tex_param_;
+		RenderEffectParameter* depth_tex_ms_param_;
 		RenderEffectParameter* shading_tex_param_;
+		RenderEffectParameter* shading_tex_ms_param_;
 		RenderEffectParameter* light_attrib_param_;
 		RenderEffectParameter* light_radius_extend_param_;
 		RenderEffectParameter* light_color_param_;
@@ -493,9 +622,18 @@ namespace KlayGE
 		RenderEffectParameter* num_cascades_param_;
 		RenderEffectParameter* view_z_to_light_view_param_;
 		std::array<RenderEffectParameter*, CascadedShadowLayer::MAX_NUM_CASCADES> filtered_csm_texs_param_;
+		PostProcessPtr depth_to_max_pps_[2];
 #if DEFAULT_DEFERRED == TRIDITIONAL_DEFERRED
 		RenderEffectParameter* lighting_tex_param_;
 #elif DEFAULT_DEFERRED == LIGHT_INDEXED_DEFERRED
+		RenderEffectParameter* g_buffer_rt0_tex_ms_param_;
+		RenderEffectParameter* g_buffer_rt1_tex_ms_param_;
+		RenderEffectParameter* g_buffer_ds_tex_ms_param_;
+		RenderEffectParameter* g_buffer_depth_tex_ms_param_;
+		RenderEffectParameter* g_buffer_stencil_tex_param_;
+		RenderEffectParameter* g_buffer_stencil_tex_ms_param_;
+		RenderEffectParameter* src_2d_tex_array_param_;
+
 		RenderEffectParameter* min_max_depth_tex_param_;
 		RenderEffectParameter* lights_color_param_;
 		RenderEffectParameter* lights_pos_es_param_;
@@ -517,22 +655,28 @@ namespace KlayGE
 		RenderEffectParameter* filtered_sms_2d_light_index_param_;
 		RenderEffectParameter* esms_scale_factor_param_;
 
-		RenderTechnique* technique_depth_to_tiled_min_max_;
-		RenderTechnique* technique_tbdr_lighting_mask_;
 		RenderEffectParameter* near_q_far_param_;
 		RenderEffectParameter* width_height_param_;
-		RenderEffectParameter* depth_to_tiled_depth_in_tex_param_;
+		RenderEffectParameter* depth_to_tiled_ds_in_tex_param_;
+		RenderEffectParameter* depth_to_tiled_linear_depth_in_tex_ms_param_;
 		RenderEffectParameter* depth_to_tiled_min_max_depth_rw_tex_param_;
 		RenderEffectParameter* linear_depth_rw_tex_param_;
 		RenderEffectParameter* upper_left_param_;
 		RenderEffectParameter* x_dir_param_;
 		RenderEffectParameter* y_dir_param_;
-		RenderEffectParameter* read_no_lighting_param_;
-		RenderEffectParameter* lighting_mask_tex_param_;
+		RenderEffectParameter* multi_sample_mask_tex_param_;
 		RenderEffectParameter* shading_in_tex_param_;
+		RenderEffectParameter* shading_in_tex_ms_param_;
 		RenderEffectParameter* shading_rw_tex_param_;
+		RenderEffectParameter* shading_rw_tex_array_param_;
 		RenderEffectParameter* lights_type_param_;
-		PostProcessPtr copy_pp_;
+		RenderEffectParameter* lights_start_in_tex_param_;
+		RenderEffectParameter* lights_start_rw_tex_param_;
+		RenderEffectParameter* intersected_light_indices_in_tex_param_;
+		RenderEffectParameter* intersected_light_indices_rw_tex_param_;
+		RenderEffectParameter* depth_slices_param_;
+		RenderEffectParameter* depth_slices_shading_param_;
+		PostProcessPtr copy_pps_[2];
 #endif
 
 		RenderEffectParameter* skylight_diff_spec_mip_param_;
@@ -540,10 +684,11 @@ namespace KlayGE
 		RenderEffectParameter* skylight_y_cube_tex_param_;
 		RenderEffectParameter* skylight_c_cube_tex_param_;
 
-		std::vector<SceneObject*> visible_scene_objs_;
+		std::vector<SceneNode*> visible_scene_nodes_;
 		bool has_sss_objs_;
 		bool has_reflective_objs_;
 		bool has_simple_forward_objs_;
+		bool has_vdm_objs_;
 
 		PostProcessPtr atmospheric_pp_;
 
@@ -577,6 +722,9 @@ namespace KlayGE
 		std::array<PerfRangePtr, PTB_None> gbuffer_perfs_;
 		std::array<PerfRangePtr, PTB_None> shadowing_perfs_;
 		std::array<PerfRangePtr, PTB_None> indirect_lighting_perfs_;
+#if DEFAULT_DEFERRED == LIGHT_INDEXED_DEFERRED
+		std::array<PerfRangePtr, PTB_None> clustering_perfs_;
+#endif
 		std::array<PerfRangePtr, PTB_None> shading_perfs_;
 		std::array<PerfRangePtr, PTB_None> reflection_perfs_;
 		std::array<PerfRangePtr, PTB_None> special_shading_perfs_;
@@ -584,8 +732,12 @@ namespace KlayGE
 		PerfRangePtr ssr_pp_perf_;
 		PerfRangePtr atmospheric_pp_perf_;
 		PerfRangePtr taa_pp_perf_;
+		PerfRangePtr vdm_perf_;
+		PerfRangePtr vdm_composition_pp_perf_;
+		PerfRangePtr depth_of_field_perf_;
+		PerfRangePtr bokeh_filter_perf_;
 #endif
 	};
 }
 
-#endif		// _DEFERREDRENDERINGLAYER_HPP
+#endif		// KLAYGE_CORE_DEFERRED_RENDERING_LAYER_HPP

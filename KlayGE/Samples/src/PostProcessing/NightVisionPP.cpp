@@ -11,10 +11,10 @@
 using namespace KlayGE;
 
 NightVisionPostProcess::NightVisionPostProcess()
-	: PostProcess(L"NightVision",
-			std::vector<std::string>(),
-			std::vector<std::string>(1, "src_tex"),
-			std::vector<std::string>(1, "output"),
+	: PostProcess(L"NightVision", false,
+			{},
+			{ "src_tex" },
+			{ "output" },
 			RenderEffectPtr(), nullptr)
 {
 	auto effect = SyncLoadRenderEffect("NightVisionPP.fxml");

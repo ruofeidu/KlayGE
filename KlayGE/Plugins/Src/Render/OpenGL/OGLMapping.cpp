@@ -17,7 +17,7 @@
 /////////////////////////////////////////////////////////////////////////////////
 
 #include <KlayGE/KlayGE.hpp>
-#include <KFL/ThrowErr.hpp>
+#include <KFL/ErrorHandling.hpp>
 #include <KFL/Math.hpp>
 #include <KFL/Vector.hpp>
 #include <KFL/Matrix.hpp>
@@ -25,6 +25,7 @@
 #include <KlayGE/RenderEngine.hpp>
 #include <KlayGE/RenderLayout.hpp>
 
+#include <system_error>
 #include <boost/assert.hpp>
 
 #include <glloader/glloader.h>
@@ -75,8 +76,7 @@ namespace KlayGE
 			return GL_GREATER;
 
 		default:
-			BOOST_ASSERT(false);
-			return GL_EQUAL;
+			KFL_UNREACHABLE("Invalid compare function");
 		};
 	}
 
@@ -126,52 +126,19 @@ namespace KlayGE
 			return GL_ONE_MINUS_CONSTANT_COLOR;
 
 		case ABF_Src1_Alpha:
-			if (glloader_GL_VERSION_3_3() || glloader_GL_ARB_blend_func_extended())
-			{
-				return GL_SRC1_ALPHA;
-			}
-			else
-			{
-				BOOST_ASSERT(false);
-				return GL_ZERO;
-			}
+			return GL_SRC1_ALPHA;
 
 		case ABF_Inv_Src1_Alpha:
-			if (glloader_GL_VERSION_3_3() || glloader_GL_ARB_blend_func_extended())
-			{
-				return GL_ONE_MINUS_SRC1_ALPHA;
-			}
-			else
-			{
-				BOOST_ASSERT(false);
-				return GL_ZERO;
-			}
+			return GL_ONE_MINUS_SRC1_ALPHA;
 
 		case ABF_Src1_Color:
-			if (glloader_GL_VERSION_3_3() || glloader_GL_ARB_blend_func_extended())
-			{
-				return GL_SRC1_COLOR;
-			}
-			else
-			{
-				BOOST_ASSERT(false);
-				return GL_ZERO;
-			}
+			return GL_SRC1_COLOR;
 
 		case ABF_Inv_Src1_Color:
-			if (glloader_GL_VERSION_3_3() || glloader_GL_ARB_blend_func_extended())
-			{
-				return GL_ONE_MINUS_SRC1_COLOR;
-			}
-			else
-			{
-				BOOST_ASSERT(false);
-				return GL_ZERO;
-			}
+			return GL_ONE_MINUS_SRC1_COLOR;
 
 		default:
-			BOOST_ASSERT(false);
-			return GL_ZERO;
+			KFL_UNREACHABLE("Invalid alpha blend factor");
 		}
 	}
 
@@ -206,8 +173,7 @@ namespace KlayGE
 			return GL_DECR_WRAP;
 
 		default:
-			BOOST_ASSERT(false);
-			return GL_KEEP;
+			KFL_UNREACHABLE("Invalid stencil operation");
 		};
 	}
 
@@ -225,8 +191,7 @@ namespace KlayGE
 			return GL_FILL;
 
 		default:
-			BOOST_ASSERT(false);
-			return GL_FILL;
+			KFL_UNREACHABLE("Invalid polygon mode");
 		}
 	}
 
@@ -241,8 +206,7 @@ namespace KlayGE
 			return GL_SMOOTH;
 
 		default:
-			BOOST_ASSERT(false);
-			return GL_FLAT;
+			KFL_UNREACHABLE("Invalid shade mode");
 		}
 	}
 
@@ -266,8 +230,7 @@ namespace KlayGE
 			return GL_MAX;
 
 		default:
-			BOOST_ASSERT(false);
-			return GL_FUNC_ADD;
+			KFL_UNREACHABLE("Invalid blend operation");
 		}
 	}
 
@@ -288,8 +251,7 @@ namespace KlayGE
 			return GL_CLAMP_TO_BORDER;
 
 		default:
-			BOOST_ASSERT(false);
-			return GL_REPEAT;
+			KFL_UNREACHABLE("Invalid texture addressing mode");
 		}
 	}
 
@@ -346,8 +308,7 @@ namespace KlayGE
 			return GL_OR_INVERTED;
 
 		default:
-			BOOST_ASSERT(false);
-			return GL_NOOP;
+			KFL_UNREACHABLE("Invalid logic operation");
 		}
 	}
 
@@ -415,21 +376,13 @@ namespace KlayGE
 		case RenderLayout::TT_30_Ctrl_Pt_PatchList:
 		case RenderLayout::TT_31_Ctrl_Pt_PatchList:
 		case RenderLayout::TT_32_Ctrl_Pt_PatchList:
-			if (glloader_GL_VERSION_4_0() || glloader_GL_ARB_tessellation_shader())
-			{
-				primType = GL_PATCHES;
-				uint32_t n = rl.TopologyType() - RenderLayout::TT_1_Ctrl_Pt_PatchList + 1;
-				glPatchParameteri(GL_PATCH_VERTICES, n);
-				primCount = vertexCount / 3;
-			}
-			else
-			{
-				THR(errc::function_not_supported);
-			}
+			primType = GL_PATCHES;
+			glPatchParameteri(GL_PATCH_VERTICES, rl.TopologyType() - RenderLayout::TT_1_Ctrl_Pt_PatchList + 1);
+			primCount = vertexCount / 3;
 			break;
 
 		default:
-			THR(errc::function_not_supported);
+			KFL_UNREACHABLE("Invalid topology type");
 		}
 	}
 
@@ -524,14 +477,7 @@ namespace KlayGE
 		case EF_SIGNED_A2BGR10:
 			internalFormat = GL_RGB10_A2;
 			glformat = GL_RGBA;
-			if (glloader_GL_VERSION_3_3() || glloader_GL_ARB_vertex_type_2_10_10_10_rev())
-			{
-				gltype = GL_INT_2_10_10_10_REV;
-			}
-			else
-			{
-				gltype = GL_UNSIGNED_INT_2_10_10_10_REV;
-			}
+			gltype = GL_INT_2_10_10_10_REV;
 			break;
 
 		case EF_R8UI:
@@ -789,7 +735,7 @@ namespace KlayGE
 			}
 			else
 			{
-				THR(errc::function_not_supported);
+				TERRC(std::errc::function_not_supported);
 			}
 			break;
 
@@ -802,7 +748,7 @@ namespace KlayGE
 			}
 			else
 			{
-				THR(errc::function_not_supported);
+				TERRC(std::errc::function_not_supported);
 			}
 			break;
 
@@ -815,32 +761,84 @@ namespace KlayGE
 			}
 			else
 			{
-				THR(errc::function_not_supported);
+				TERRC(std::errc::function_not_supported);
 			}
 			break;
 
 		case EF_BC4:
 			internalFormat = GL_COMPRESSED_RED_RGTC1;
-			glformat = GL_COMPRESSED_LUMINANCE;
+			glformat = GL_COMPRESSED_RED_RGTC1;
 			gltype = GL_UNSIGNED_BYTE;
 			break;
 
 		case EF_BC5:
 			internalFormat = GL_COMPRESSED_RG_RGTC2;
-			glformat = GL_COMPRESSED_LUMINANCE_ALPHA;
+			glformat = GL_COMPRESSED_RG_RGTC2;
 			gltype = GL_UNSIGNED_BYTE;
 			break;
 
 		case EF_SIGNED_BC4:
 			internalFormat = GL_COMPRESSED_SIGNED_RED_RGTC1;
-			glformat = GL_COMPRESSED_LUMINANCE;
+			glformat = GL_COMPRESSED_SIGNED_RED_RGTC1;
 			gltype = GL_UNSIGNED_BYTE;
 			break;
 
 		case EF_SIGNED_BC5:
 			internalFormat = GL_COMPRESSED_SIGNED_RG_RGTC2;
-			glformat = GL_COMPRESSED_LUMINANCE_ALPHA;
+			glformat = GL_COMPRESSED_SIGNED_RG_RGTC2;
 			gltype = GL_UNSIGNED_BYTE;
+			break;
+
+		case EF_BC6:
+			if (glloader_GL_ARB_texture_compression_bptc())
+			{
+				internalFormat = GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT_ARB;
+				glformat = GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT_ARB;
+				gltype = GL_UNSIGNED_BYTE;
+			}
+			else
+			{
+				TERRC(std::errc::function_not_supported);
+			}
+			break;
+
+		case EF_SIGNED_BC6:
+			if (glloader_GL_ARB_texture_compression_bptc())
+			{
+				internalFormat = GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT_ARB;
+				glformat = GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT_ARB;
+				gltype = GL_UNSIGNED_BYTE;
+			}
+			else
+			{
+				TERRC(std::errc::function_not_supported);
+			}
+			break;
+
+		case EF_BC7:
+			if (glloader_GL_ARB_texture_compression_bptc())
+			{
+				internalFormat = GL_COMPRESSED_RGBA_BPTC_UNORM_ARB;
+				glformat = GL_COMPRESSED_RGBA_BPTC_UNORM_ARB;
+				gltype = GL_UNSIGNED_BYTE;
+			}
+			else
+			{
+				TERRC(std::errc::function_not_supported);
+			}
+			break;
+
+		case EF_BC7_SRGB:
+			if (glloader_GL_ARB_texture_compression_bptc())
+			{
+				internalFormat = GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM_ARB;
+				glformat = GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM_ARB;
+				gltype = GL_UNSIGNED_BYTE;
+			}
+			else
+			{
+				TERRC(std::errc::function_not_supported);
+			}
 			break;
 
 		case EF_D16:
@@ -875,31 +873,31 @@ namespace KlayGE
 
 		case EF_BC1_SRGB:
 			internalFormat = GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT;
-			glformat = GL_BGRA;
+			glformat = GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT;
 			gltype = GL_UNSIGNED_BYTE;
 			break;
 
 		case EF_BC2_SRGB:
 			internalFormat = GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT;
-			glformat = GL_BGRA;
+			glformat = GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT;
 			gltype = GL_UNSIGNED_BYTE;
 			break;
 
 		case EF_BC3_SRGB:
 			internalFormat = GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT;
-			glformat = GL_BGRA;
+			glformat = GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT;
 			gltype = GL_UNSIGNED_BYTE;
 			break;
 
 		case EF_BC4_SRGB:
 			internalFormat = GL_COMPRESSED_SLUMINANCE;
-			glformat = GL_LUMINANCE;
+			glformat = GL_COMPRESSED_SLUMINANCE;
 			gltype = GL_UNSIGNED_BYTE;
 			break;
 
 		case EF_BC5_SRGB:
 			internalFormat = GL_COMPRESSED_SLUMINANCE_ALPHA;
-			glformat = GL_LUMINANCE_ALPHA;
+			glformat = GL_COMPRESSED_SLUMINANCE_ALPHA;
 			gltype = GL_UNSIGNED_BYTE;
 			break;
 
@@ -907,12 +905,12 @@ namespace KlayGE
 			if (glloader_GL_VERSION_4_3() || glloader_GL_ARB_ES3_compatibility())
 			{
 				internalFormat = GL_COMPRESSED_RGB8_ETC2;
-				glformat = GL_RGB;
+				glformat = GL_COMPRESSED_RGB8_ETC2;
 				gltype = GL_UNSIGNED_BYTE;
 			}
 			else
 			{
-				THR(errc::function_not_supported);
+				TERRC(std::errc::function_not_supported);
 			}
 			break;
 
@@ -920,12 +918,12 @@ namespace KlayGE
 			if (glloader_GL_VERSION_4_3() || glloader_GL_ARB_ES3_compatibility())
 			{
 				internalFormat = GL_COMPRESSED_R11_EAC;
-				glformat = GL_RED;
+				glformat = GL_COMPRESSED_R11_EAC;
 				gltype = GL_UNSIGNED_BYTE;
 			}
 			else
 			{
-				THR(errc::function_not_supported);
+				TERRC(std::errc::function_not_supported);
 			}
 			break;
 
@@ -933,12 +931,12 @@ namespace KlayGE
 			if (glloader_GL_VERSION_4_3() || glloader_GL_ARB_ES3_compatibility())
 			{
 				internalFormat = GL_COMPRESSED_SIGNED_R11_EAC;
-				glformat = GL_RED;
+				glformat = GL_COMPRESSED_SIGNED_R11_EAC;
 				gltype = GL_UNSIGNED_BYTE;
 			}
 			else
 			{
-				THR(errc::function_not_supported);
+				TERRC(std::errc::function_not_supported);
 			}
 			break;
 
@@ -946,12 +944,12 @@ namespace KlayGE
 			if (glloader_GL_VERSION_4_3() || glloader_GL_ARB_ES3_compatibility())
 			{
 				internalFormat = GL_COMPRESSED_RG11_EAC;
-				glformat = GL_RG;
+				glformat = GL_COMPRESSED_RG11_EAC;
 				gltype = GL_UNSIGNED_BYTE;
 			}
 			else
 			{
-				THR(errc::function_not_supported);
+				TERRC(std::errc::function_not_supported);
 			}
 			break;
 
@@ -959,12 +957,12 @@ namespace KlayGE
 			if (glloader_GL_VERSION_4_3() || glloader_GL_ARB_ES3_compatibility())
 			{
 				internalFormat = GL_COMPRESSED_SIGNED_RG11_EAC;
-				glformat = GL_RG;
+				glformat = GL_COMPRESSED_SIGNED_RG11_EAC;
 				gltype = GL_UNSIGNED_BYTE;
 			}
 			else
 			{
-				THR(errc::function_not_supported);
+				TERRC(std::errc::function_not_supported);
 			}
 			break;
 
@@ -972,12 +970,12 @@ namespace KlayGE
 			if (glloader_GL_VERSION_4_3() || glloader_GL_ARB_ES3_compatibility())
 			{
 				internalFormat = GL_COMPRESSED_RGB8_ETC2;
-				glformat = GL_RGB;
+				glformat = GL_COMPRESSED_RGB8_ETC2;
 				gltype = GL_UNSIGNED_BYTE;
 			}
 			else
 			{
-				THR(errc::function_not_supported);
+				TERRC(std::errc::function_not_supported);
 			}
 			break;
 
@@ -985,12 +983,12 @@ namespace KlayGE
 			if (glloader_GL_VERSION_4_3() || glloader_GL_ARB_ES3_compatibility())
 			{
 				internalFormat = GL_COMPRESSED_SRGB8_ETC2;
-				glformat = GL_RGB;
+				glformat = GL_COMPRESSED_SRGB8_ETC2;
 				gltype = GL_UNSIGNED_BYTE;
 			}
 			else
 			{
-				THR(errc::function_not_supported);
+				TERRC(std::errc::function_not_supported);
 			}
 			break;
 
@@ -998,12 +996,12 @@ namespace KlayGE
 			if (glloader_GL_VERSION_4_3() || glloader_GL_ARB_ES3_compatibility())
 			{
 				internalFormat = GL_COMPRESSED_RGB8_PUNCHTHROUGH_ALPHA1_ETC2;
-				glformat = GL_RGBA;
+				glformat = GL_COMPRESSED_RGB8_PUNCHTHROUGH_ALPHA1_ETC2;
 				gltype = GL_UNSIGNED_BYTE;
 			}
 			else
 			{
-				THR(errc::function_not_supported);
+				TERRC(std::errc::function_not_supported);
 			}
 			break;
 
@@ -1011,12 +1009,12 @@ namespace KlayGE
 			if (glloader_GL_VERSION_4_3() || glloader_GL_ARB_ES3_compatibility())
 			{
 				internalFormat = GL_COMPRESSED_SRGB8_PUNCHTHROUGH_ALPHA1_ETC2;
-				glformat = GL_RGBA;
+				glformat = GL_COMPRESSED_SRGB8_PUNCHTHROUGH_ALPHA1_ETC2;
 				gltype = GL_UNSIGNED_BYTE;
 			}
 			else
 			{
-				THR(errc::function_not_supported);
+				TERRC(std::errc::function_not_supported);
 			}
 			break;
 
@@ -1024,12 +1022,12 @@ namespace KlayGE
 			if (glloader_GL_VERSION_4_3() || glloader_GL_ARB_ES3_compatibility())
 			{
 				internalFormat = GL_COMPRESSED_RGBA8_ETC2_EAC;
-				glformat = GL_RGBA;
+				glformat = GL_COMPRESSED_RGBA8_ETC2_EAC;
 				gltype = GL_UNSIGNED_BYTE;
 			}
 			else
 			{
-				THR(errc::function_not_supported);
+				TERRC(std::errc::function_not_supported);
 			}
 			break;
 
@@ -1037,17 +1035,17 @@ namespace KlayGE
 			if (glloader_GL_VERSION_4_3() || glloader_GL_ARB_ES3_compatibility())
 			{
 				internalFormat = GL_COMPRESSED_SRGB8_ALPHA8_ETC2_EAC;
-				glformat = GL_RGBA;
+				glformat = GL_COMPRESSED_SRGB8_ALPHA8_ETC2_EAC;
 				gltype = GL_UNSIGNED_BYTE;
 			}
 			else
 			{
-				THR(errc::function_not_supported);
+				TERRC(std::errc::function_not_supported);
 			}
 			break;
 
 		default:
-			THR(errc::function_not_supported);
+			KFL_UNREACHABLE("Invalid element format");
 		}
 	}
 
@@ -1095,14 +1093,7 @@ namespace KlayGE
 			break;
 
 		case EF_SIGNED_A2BGR10:
-			if (glloader_GL_VERSION_3_3() || glloader_GL_ARB_vertex_type_2_10_10_10_rev())
-			{
-				gltype = GL_INT_2_10_10_10_REV;
-			}
-			else
-			{
-				gltype = GL_UNSIGNED_INT_2_10_10_10_REV;
-			}
+			gltype = GL_INT_2_10_10_10_REV;
 			normalized = GL_TRUE;
 			break;
 
@@ -1176,7 +1167,7 @@ namespace KlayGE
 			break;
 
 		default:
-			THR(errc::function_not_supported);
+			KFL_UNREACHABLE("Invalid vertex format");
 		}
 	}
 }

@@ -1,13 +1,6 @@
 #include <KlayGE/KlayGE.hpp>
 
-#ifdef KLAYGE_COMPILER_MSVC
-#pragma warning(push)
-#pragma warning(disable: 4793) // boost::signals2::detail::do_postconstruct/do_predestruct can't have /clr
-#endif
 #include "../MtlEditorCore/MtlEditorCore.hpp"
-#ifdef KLAYGE_COMPILER_MSVC
-#pragma warning(pop)
-#endif
 
 #include "MtlEditorCoreWrapper.hpp"
 
@@ -31,6 +24,7 @@ namespace KlayGE
 		Context::Instance().LoadCfg("KlayGE.cfg");
 
 		ContextCfg cfg = Context::Instance().Config();
+		cfg.render_factory_name = "D3D11";
 		cfg.deferred_rendering = true;
 		Context::Instance().Config(cfg);
 
@@ -123,6 +117,11 @@ namespace KlayGE
 		core_->SkinningOn(on ? true : false);
 	}
 
+	void MtlEditorCoreWrapper::SkeletonOn(int on)
+	{
+		core_->SkeletonOn(on ? true : false);
+	}
+
 	void MtlEditorCoreWrapper::LightOn(int on)
 	{
 		core_->LightOn(on ? true : false);
@@ -166,6 +165,16 @@ namespace KlayGE
 	void MtlEditorCoreWrapper::KeyPress(int key)
 	{
 		core_->KeyPress(key);
+	}
+
+	uint32_t MtlEditorCoreWrapper::NumLods()
+	{
+		return core_->NumLods();
+	}
+
+	void MtlEditorCoreWrapper::ActiveLod(int lod)
+	{
+		core_->ActiveLod(lod);
 	}
 
 	uint32_t MtlEditorCoreWrapper::NumMeshes()
@@ -292,6 +301,11 @@ namespace KlayGE
 		return core_->SSSMaterial(mtl_id);
 	}
 
+	bool MtlEditorCoreWrapper::TwoSidedMaterial(uint32_t mtl_id)
+	{
+		return core_->TwoSidedMaterial(mtl_id);
+	}
+
 	void MtlEditorCoreWrapper::MaterialID(uint32_t mesh_id, uint32_t mtl_id)
 	{
 		core_->MaterialID(mesh_id, mtl_id);
@@ -386,6 +400,11 @@ namespace KlayGE
 	void MtlEditorCoreWrapper::SSSMaterial(uint32_t mtl_id, bool value)
 	{
 		core_->SSSMaterial(mtl_id, value);
+	}
+
+	void MtlEditorCoreWrapper::TwoSidedMaterial(uint32_t mtl_id, bool value)
+	{
+		core_->TwoSidedMaterial(mtl_id, value);
 	}
 
 	uint32_t MtlEditorCoreWrapper::CopyMaterial(uint32_t mtl_id)

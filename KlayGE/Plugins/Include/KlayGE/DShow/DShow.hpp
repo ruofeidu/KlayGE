@@ -15,21 +15,19 @@
 
 #pragma once
 
-#include <windows.h>
-#include <control.h>
-#include <d3d9.h>
-#include <strmif.h>
-#include <vmr9.h>
-
 #include <string>
-
-#include <boost/noncopyable.hpp>
 
 #include <KlayGE/Show.hpp>
 
+struct IGraphBuilder;
+struct IBaseFilter;
+struct IMediaControl;
+struct IMediaEvent;
+struct IVMRSurfaceAllocator9;
+
 namespace KlayGE
 {
-	class DShowEngine : boost::noncopyable, public ShowEngine
+	class DShowEngine : public ShowEngine
 	{
 	public:
 		DShowEngine();

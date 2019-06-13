@@ -19,7 +19,6 @@
 #include <KlayGE/KlayGE.hpp>
 #include <KFL/Util.hpp>
 #include <KFL/COMPtr.hpp>
-#include <KFL/ThrowErr.hpp>
 #include <KFL/Math.hpp>
 #include <KlayGE/RenderEngine.hpp>
 #include <KlayGE/RenderFactory.hpp>
@@ -57,9 +56,9 @@ namespace KlayGE
 		std::vector<char> used_streams(max_vertex_streams, 0);
 		for (uint32_t i = 0; i < this->NumVertexStreams(); ++ i)
 		{
-			OGLGraphicsBuffer& stream(*checked_pointer_cast<OGLGraphicsBuffer>(this->GetVertexStream(i)));
+			auto& stream = checked_cast<OGLGraphicsBuffer&>(*this->GetVertexStream(i));
 			uint32_t const size = this->VertexSize(i);
-			vertex_elements_type const & vertex_stream_fmt = this->VertexStreamFormat(i);
+			auto const & vertex_stream_fmt = this->VertexStreamFormat(i);
 
 			if (glloader_GL_VERSION_4_5() || glloader_GL_ARB_direct_state_access())
 			{
@@ -106,9 +105,9 @@ namespace KlayGE
 			}
 		}
 
-		if (this->InstanceStream() && (glloader_GL_VERSION_3_3() || glloader_GL_ARB_instanced_arrays()))
+		if (this->InstanceStream())
 		{
-			OGLGraphicsBuffer& stream(*checked_pointer_cast<OGLGraphicsBuffer>(this->InstanceStream()));
+			auto& stream = checked_cast<OGLGraphicsBuffer&>(*this->InstanceStream());
 
 			uint32_t const instance_size = this->InstanceSize();
 			BOOST_ASSERT(this->NumInstances() * instance_size <= stream.Size());
@@ -124,7 +123,7 @@ namespace KlayGE
 			uint32_t elem_offset = 0;
 			for (size_t i = 0; i < inst_format_size; ++ i)
 			{
-				vertex_element const & vs_elem = this->InstanceStreamFormat()[i];
+				VertexElement const & vs_elem = this->InstanceStreamFormat()[i];
 
 				GLint attr = ogl_so->GetAttribLocation(vs_elem.usage, vs_elem.usage_index);
 				if (attr != -1)
@@ -149,30 +148,14 @@ namespace KlayGE
 						glVertexArrayVertexAttribOffsetEXT(vao, stream.GLvbo(), attr, num_components, type,
 							normalized, instance_size, offset);
 						glEnableVertexArrayAttribEXT(vao, attr);
-
-						if (glloader_GL_VERSION_3_3())
-						{
-							glVertexAttribDivisor(attr, 1);
-						}
-						else
-						{
-							glVertexAttribDivisorARB(attr, 1);
-						}
+						glVertexAttribDivisor(attr, 1);
 					}
 					else
 					{
 						glVertexAttribPointer(attr, num_components, type, normalized, instance_size,
 							reinterpret_cast<GLvoid*>(offset));
 						glEnableVertexAttribArray(attr);
-
-						if (glloader_GL_VERSION_3_3())
-						{
-							glVertexAttribDivisor(attr, 1);
-						}
-						else
-						{
-							glVertexAttribDivisorARB(attr, 1);
-						}
+						glVertexAttribDivisor(attr, 1);
 					}
 
 					used_streams[attr] = 1;
@@ -207,7 +190,7 @@ namespace KlayGE
 		OGLShaderObjectPtr const & ogl_so = checked_pointer_cast<OGLShaderObject>(so);
 		for (uint32_t i = 0; i < this->NumVertexStreams(); ++ i)
 		{
-			vertex_elements_type const & vertex_stream_fmt = this->VertexStreamFormat(i);
+			auto const & vertex_stream_fmt = this->VertexStreamFormat(i);
 
 			for (auto const & vs_elem : vertex_stream_fmt)
 			{
@@ -230,7 +213,7 @@ namespace KlayGE
 			}
 		}
 
-		if (this->InstanceStream() && (glloader_GL_VERSION_3_3() || glloader_GL_ARB_instanced_arrays()))
+		if (this->InstanceStream())
 		{
 			if (glloader_GL_VERSION_4_5() || glloader_GL_ARB_direct_state_access())
 			{
@@ -240,7 +223,7 @@ namespace KlayGE
 			size_t const inst_format_size = this->InstanceStreamFormat().size();
 			for (size_t i = 0; i < inst_format_size; ++ i)
 			{
-				vertex_element const & vs_elem = this->InstanceStreamFormat()[i];
+				VertexElement const & vs_elem = this->InstanceStreamFormat()[i];
 				GLint attr = ogl_so->GetAttribLocation(vs_elem.usage, vs_elem.usage_index);
 				if (attr != -1)
 				{
@@ -251,28 +234,12 @@ namespace KlayGE
 					else if (glloader_GL_EXT_direct_state_access())
 					{
 						glDisableVertexArrayAttribEXT(vao, attr);
-
-						if (glloader_GL_VERSION_3_3())
-						{
-							glVertexAttribDivisor(attr, 0);
-						}
-						else
-						{
-							glVertexAttribDivisorARB(attr, 0);
-						}
+						glVertexAttribDivisor(attr, 0);
 					}
 					else
 					{
 						glDisableVertexAttribArray(attr);
-
-						if (glloader_GL_VERSION_3_3())
-						{
-							glVertexAttribDivisor(attr, 0);
-						}
-						else
-						{
-							glVertexAttribDivisorARB(attr, 0);
-						}
+						glVertexAttribDivisor(attr, 0);
 					}
 				}
 			}
@@ -309,21 +276,21 @@ namespace KlayGE
 			}
 		}
 
-		OGLRenderEngine& re = *checked_cast<OGLRenderEngine*>(&Context::Instance().RenderFactoryInstance().RenderEngineInstance());
+		auto& re = checked_cast<OGLRenderEngine&>(Context::Instance().RenderFactoryInstance().RenderEngineInstance());
 		if (this->NumVertexStreams() > 0)
 		{
-			OGLGraphicsBuffer& stream(*checked_pointer_cast<OGLGraphicsBuffer>(this->GetVertexStream(this->NumVertexStreams() - 1)));
+			auto& stream = checked_cast<OGLGraphicsBuffer&>(*this->GetVertexStream(this->NumVertexStreams() - 1));
 			re.OverrideBindBufferCache(stream.GLType(), stream.GLvbo());
 		}
-		if (this->InstanceStream() && (glloader_GL_VERSION_3_3() || glloader_GL_ARB_instanced_arrays()))
+		if (this->InstanceStream())
 		{
-			OGLGraphicsBuffer& stream(*checked_pointer_cast<OGLGraphicsBuffer>(this->InstanceStream()));
+			auto& stream = checked_cast<OGLGraphicsBuffer&>(*this->InstanceStream());
 			re.OverrideBindBufferCache(stream.GLType(), stream.GLvbo());
 		}
 
 		if (this->UseIndices())
 		{
-			OGLGraphicsBuffer& stream(*checked_pointer_cast<OGLGraphicsBuffer>(this->GetIndexStream()));
+			auto& stream = checked_cast<OGLGraphicsBuffer&>(*this->GetIndexStream());
 			BOOST_ASSERT(GL_ELEMENT_ARRAY_BUFFER == stream.GLType());
 			stream.Active(true);
 		}

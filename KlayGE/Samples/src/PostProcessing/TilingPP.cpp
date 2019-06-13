@@ -19,16 +19,16 @@ int const LOG_2_TILE_SIZE = 4;
 int const TILE_SIZE = 1 << LOG_2_TILE_SIZE;
 
 TilingPostProcess::TilingPostProcess()
-	: PostProcess(L"Tiling",
-		std::vector<std::string>(),
-		std::vector<std::string>(1, "src_tex"),
-		std::vector<std::string>(1, "output"),
+	: PostProcess(L"Tiling", false,
+		{},
+		{ "src_tex" },
+		{ "output" },
 		RenderEffectPtr(), nullptr)
 {
 	auto effect = SyncLoadRenderEffect("TilingPP.fxml");
 	this->Technique(effect, effect->TechniqueByName("Tiling"));
 
-	downsampler_ = SyncLoadPostProcess("Copy.ppml", "bilinear_copy");
+	downsampler_ = SyncLoadPostProcess("Copy.ppml", "BilinearCopy");
 
 	tile_per_row_line_ep_ = effect->ParameterByName("tile_per_row_line");
 }
@@ -38,7 +38,7 @@ void TilingPostProcess::InputPin(uint32_t index, TexturePtr const & tex)
 	RenderFactory& rf = Context::Instance().RenderFactoryInstance();
 
 	downsample_tex_ = rf.MakeTexture2D(tex->Width(0) / 2, tex->Height(0) / 2,
-		4, 1, tex->Format(), 1, 0, EAH_GPU_Read | EAH_GPU_Write | EAH_Generate_Mips, nullptr);
+		4, 1, tex->Format(), 1, 0, EAH_GPU_Read | EAH_GPU_Write | EAH_Generate_Mips);
 
 	downsampler_->InputPin(index, tex);
 	downsampler_->OutputPin(index, downsample_tex_);

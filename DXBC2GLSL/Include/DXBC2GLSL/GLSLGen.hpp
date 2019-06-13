@@ -50,14 +50,17 @@ enum GLSLVersion
 	GSV_430,			// GL 4.3
 	GSV_440,			// GL 4.4
 	GSV_450,			// GL 4.5
+	GSV_460,			// GL 4.6
 
 	GSV_100_ES,			// GL ES 2.0
 	GSV_300_ES,			// GL ES 3.0
 	GSV_310_ES,			// GL ES 3.1
-	GSV_320_ES			// GL ES 3.2
+	GSV_320_ES,			// GL ES 3.2
+
+	GSV_NumVersions
 };
 
-enum GLSLRules
+enum GLSLRules : uint32_t
 {
 	GSR_UniformBlockBinding = 1UL << 0,		// Set means allow uniform block layout bindings e.g.layout(binding=N) uniform {};.
 	GSR_GlobalUniformsInUBO = 1UL << 1,		// Set means collect global uniforms in uniform block named $Globals.
@@ -84,7 +87,7 @@ enum GLSLRules
 	GSR_EXTFragDepth = 1UL << 22,
 	GSR_EXTTessellationShader = 1UL << 23,
 	GSR_PrecisionOnSampler = 1UL << 24,
-	GSR_ForceUInt32 = 0xFFFFFFFF
+	GSR_ExplicitMultiSample = 1UL << 25
 };
 
 struct RegisterDesc
@@ -131,7 +134,7 @@ public:
 	static uint32_t DefaultRules(GLSLVersion version);
 
 	void FeedDXBC(std::shared_ptr<ShaderProgram> const & program,
-		bool has_gs, ShaderTessellatorPartitioning ds_partitioning, ShaderTessellatorOutputPrimitive ds_output_primitive,
+		bool has_gs, bool has_ps, ShaderTessellatorPartitioning ds_partitioning, ShaderTessellatorOutputPrimitive ds_output_primitive,
 		GLSLVersion version, uint32_t glsl_rules);
 	void ToGLSL(std::ostream& out);
 	void ToHSControlPointPhase(std::ostream& out);
@@ -195,12 +198,14 @@ private:
 	void FindHSControlPointPhase();
 	void FindHSForkPhases();
 	void FindHSJoinPhases();
+	ShaderImmType FindTextureReturnType(ShaderOperand const & op) const;
 
 private:
 	std::shared_ptr<ShaderProgram> program_;
 
 	ShaderType shader_type_;
 	bool has_gs_;
+	bool has_ps_;
 	ShaderTessellatorPartitioning ds_partitioning_;
 	ShaderTessellatorOutputPrimitive ds_output_primitive_;
 	std::vector<DclIndexRangeInfo> idx_range_info_;

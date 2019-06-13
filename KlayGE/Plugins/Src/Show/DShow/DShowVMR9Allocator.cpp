@@ -11,7 +11,7 @@
 /////////////////////////////////////////////////////////////////////
 
 #include <KlayGE/KlayGE.hpp>
-#include <KFL/ThrowErr.hpp>
+#include <KFL/ErrorHandling.hpp>
 #include <KFL/COMPtr.hpp>
 #include <KFL/Math.hpp>
 #include <KlayGE/ElementFormat.hpp>
@@ -19,11 +19,30 @@
 #include <KlayGE/Texture.hpp>
 #include <KlayGE/RenderFactory.hpp>
 #include <KlayGE/RenderEngine.hpp>
-#include <KFL/Thread.hpp>
 
 #include <cstring>
-#include <d3d9.h>
 #include <boost/assert.hpp>
+
+#if defined(KLAYGE_COMPILER_GCC)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcomment" // Ignore "/*" within block comment
+#pragma GCC diagnostic ignored "-Wunknown-pragmas" // Ignore unknown pragmas
+#endif
+#include <d3d9.h>
+#if defined(KLAYGE_COMPILER_GCC)
+#pragma GCC diagnostic pop
+#endif
+#ifdef KLAYGE_COMPILER_GCC
+#define _WIN32_WINNT_BACKUP _WIN32_WINNT
+#undef _WIN32_WINNT
+#define _WIN32_WINNT 0x0501
+#endif
+#include <strmif.h>
+#ifdef KLAYGE_COMPILER_GCC
+#undef _WIN32_WINNT
+#define _WIN32_WINNT _WIN32_WINNT_BACKUP
+#endif
+#include <vmr9.h>
 
 #include <KlayGE/DShow/DShowVMR9Allocator.hpp>
 
@@ -41,7 +60,14 @@ namespace KlayGE
 
 		if (mod_d3d9_ != nullptr)
 		{
+#if defined(KLAYGE_COMPILER_GCC) && (KLAYGE_COMPILER_VERSION >= 80)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-function-type"
+#endif
 			DynamicDirect3DCreate9_ = reinterpret_cast<Direct3DCreate9Func>(::GetProcAddress(mod_d3d9_, "Direct3DCreate9"));
+#if defined(KLAYGE_COMPILER_GCC) && (KLAYGE_COMPILER_VERSION >= 80)
+#pragma GCC diagnostic pop
+#endif
 		}
 
 		d3d_ = MakeCOMPtr(DynamicDirect3DCreate9_(D3D_SDK_VERSION));
@@ -86,7 +112,7 @@ namespace KlayGE
 		}
 
 		IDirect3DDevice9* d3d_device;
-		TIF(d3d_->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL,
+		TIFHR(d3d_->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL,
 			wnd_, vp_mode | D3DCREATE_FPU_PRESERVE | D3DCREATE_MULTITHREADED,
 			&d3dpp_, &d3d_device));
 		d3d_device_ = MakeCOMPtr(d3d_device);
@@ -150,56 +176,24 @@ namespace KlayGE
 			lpAllocInfo->dwFlags &= ~VMR9AllocFlag_TextureSurface;
 			lpAllocInfo->dwFlags |= VMR9AllocFlag_OffscreenSurface;
 
-			TIF(vmr_surf_alloc_notify_->AllocateSurfaceHelper(lpAllocInfo, lpNumBuffers, &surfaces_[0]));
+			TIFHR(vmr_surf_alloc_notify_->AllocateSurfaceHelper(lpAllocInfo, lpNumBuffers, &surfaces_[0]));
 		}
 
 
 		RenderFactory& rf = Context::Instance().RenderFactoryInstance();
-		ElementFormat fmt;
-		if (Context::Instance().Config().graphics_cfg.gamma)
+		auto const & caps = rf.RenderEngineInstance().DeviceCaps();
+		static ElementFormat constexpr backup_fmts[] = { EF_ABGR8_SRGB, EF_ARGB8_SRGB, EF_ABGR8, EF_ARGB8 };
+		ArrayRef<ElementFormat> fmt_options = backup_fmts;
+		if (!Context::Instance().Config().graphics_cfg.gamma)
 		{
-			if (rf.RenderEngineInstance().DeviceCaps().texture_format_support(EF_ABGR8_SRGB))
-			{
-				fmt = EF_ABGR8_SRGB;
-			}
-			else
-			{
-				if (rf.RenderEngineInstance().DeviceCaps().texture_format_support(EF_ARGB8_SRGB))
-				{
-					fmt = EF_ARGB8_SRGB;
-				}
-				else
-				{
-					if (rf.RenderEngineInstance().DeviceCaps().texture_format_support(EF_ABGR8))
-					{
-						fmt = EF_ABGR8;
-					}
-					else
-					{
-						BOOST_ASSERT(rf.RenderEngineInstance().DeviceCaps().texture_format_support(EF_ARGB8));
-
-						fmt = EF_ARGB8;
-					}
-				}
-			}
+			fmt_options = fmt_options.Slice(2);
 		}
-		else
-		{
-			if (rf.RenderEngineInstance().DeviceCaps().texture_format_support(EF_ABGR8))
-			{
-				fmt = EF_ABGR8;
-			}
-			else
-			{
-				BOOST_ASSERT(rf.RenderEngineInstance().DeviceCaps().texture_format_support(EF_ARGB8));
-
-				fmt = EF_ARGB8;
-			}
-		}
-		present_tex_ = rf.MakeTexture2D(lpAllocInfo->dwWidth, lpAllocInfo->dwHeight, 1, 1, fmt, 1, 0, EAH_CPU_Write | EAH_GPU_Read, nullptr);
+		auto const fmt = caps.BestMatchTextureFormat(fmt_options);
+		BOOST_ASSERT(fmt != EF_Unknown);
+		present_tex_ = rf.MakeTexture2D(lpAllocInfo->dwWidth, lpAllocInfo->dwHeight, 1, 1, fmt, 1, 0, EAH_CPU_Write | EAH_GPU_Read);
 
 		IDirect3DSurface9* surf;
-		TIF(d3d_device_->CreateOffscreenPlainSurface(lpAllocInfo->dwWidth, lpAllocInfo->dwHeight,
+		TIFHR(d3d_device_->CreateOffscreenPlainSurface(lpAllocInfo->dwWidth, lpAllocInfo->dwHeight,
 			D3DFMT_X8R8G8B8, D3DPOOL_SYSTEMMEM, &surf, nullptr));
 		cache_surf_ = MakeCOMPtr(surf);
 
@@ -251,7 +245,7 @@ namespace KlayGE
 		vmr_surf_alloc_notify_->AddRef();
 
 		HMONITOR hMonitor = d3d_->GetAdapterMonitor(D3DADAPTER_DEFAULT);
-		TIF(vmr_surf_alloc_notify_->SetD3DDevice(d3d_device_.get(), hMonitor));
+		TIFHR(vmr_surf_alloc_notify_->SetD3DDevice(d3d_device_.get(), hMonitor));
 
 		return S_OK;
 	}
@@ -331,7 +325,7 @@ namespace KlayGE
 			this->CreateDevice();
 
 			HMONITOR hMonitor = d3d_->GetAdapterMonitor(D3DADAPTER_DEFAULT);
-			TIF(vmr_surf_alloc_notify_->ChangeD3DDevice(d3d_device_.get(), hMonitor));
+			TIFHR(vmr_surf_alloc_notify_->ChangeD3DDevice(d3d_device_.get(), hMonitor));
 		}
 
 		return S_OK;
@@ -406,10 +400,10 @@ namespace KlayGE
 
 		if (cur_surf_index_ < surfaces_.size())
 		{
-			TIF(d3d_device_->GetRenderTargetData(surfaces_[cur_surf_index_], cache_surf_.get()));
+			TIFHR(d3d_device_->GetRenderTargetData(surfaces_[cur_surf_index_], cache_surf_.get()));
 
 			D3DLOCKED_RECT d3dlocked_rc;
-			TIF(cache_surf_->LockRect(&d3dlocked_rc, nullptr, D3DLOCK_NOSYSLOCK | D3DLOCK_READONLY));
+			TIFHR(cache_surf_->LockRect(&d3dlocked_rc, nullptr, D3DLOCK_NOSYSLOCK | D3DLOCK_READONLY));
 
 			uint32_t const width = present_tex_->Width(0);
 			uint32_t const height = present_tex_->Height(0);
@@ -448,7 +442,7 @@ namespace KlayGE
 				}
 			}
 
-			TIF(cache_surf_->UnlockRect());
+			TIFHR(cache_surf_->UnlockRect());
 		}
 
 		return present_tex_;

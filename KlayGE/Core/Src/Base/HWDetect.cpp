@@ -30,15 +30,19 @@
 
 #include <KlayGE/KlayGE.hpp>
 #define INITGUID
+#include <KFL/CXX17/iterator.hpp>
 
+#include <cstring>
 #include <boost/assert.hpp>
 
 #if defined KLAYGE_PLATFORM_WINDOWS_DESKTOP
 #include <KFL/COMPtr.hpp>
-#include <comdef.h>
+#ifndef __wbemdisp_h__
+#define __wbemdisp_h__	// Force not to include wbemdisp.h
+#endif
 #include <WbemIdl.h>
 
-#if defined KLAYGE_COMPILER_MSVC
+#if defined(KLAYGE_COMPILER_MSVC)
 DEFINE_GUID(IID_IWbemLocator, 0xdc12a687, 0x737f, 0x11cf, 0x88, 0x4d, 0x00, 0xaa, 0x00, 0x4b, 0x2e, 0x24);
 #endif
 #if !defined(KLAYGE_COMPILER_GCC)
@@ -69,7 +73,7 @@ namespace KlayGE
 	};
 
 #if defined KLAYGE_PLATFORM_WINDOWS_DESKTOP
-	class WMI : boost::noncopyable
+	class WMI final : boost::noncopyable
 	{
 	public:
 		bool Init()
@@ -104,7 +108,8 @@ namespace KlayGE
 			BOOST_ASSERT(wbem_services_);
 
 			IEnumWbemClassObject* wbem_enum_result = nullptr;
-			HRESULT hr = wbem_services_->ExecQuery(bstr_t(L"WQL"), wql,
+			wchar_t query_lang[] = L"WQL";
+			HRESULT hr = wbem_services_->ExecQuery(query_lang, wql,
 				WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY, nullptr, &wbem_enum_result);
 			if (FAILED(hr))
 			{
@@ -225,12 +230,14 @@ namespace KlayGE
 			return false;
 		}
 
-		if (!wmi.ConnectServer(bstr_t(L"root\\WMI")))
+		wchar_t network_resource[] = L"root\\WMI";
+		if (!wmi.ConnectServer(network_resource))
 		{
 			return false;
 		}
 
-		if (!wmi.ExecuteQuery(bstr_t(L"SELECT * FROM MSSMBios_RawSMBiosTables")))
+		wchar_t wql[] = L"SELECT * FROM MSSMBios_RawSMBiosTables";
+		if (!wmi.ExecuteQuery(wql))
 		{
 			return false;
 		}
@@ -260,15 +267,8 @@ namespace KlayGE
 
 	uint32_t SMBios::TypeCount(uint8_t type) const
 	{
-		uint32_t ret = 0;
-		for (auto const & table : smbios_tables_)
-		{
-			if (table.type == type)
-			{
-				++ ret;
-			}
-		}
-		return ret;
+		return static_cast<uint32_t>(
+			std::count_if(smbios_tables_.begin(), smbios_tables_.end(), [type](TableInfo const& table) { return (table.type == type); }));
 	}
 
 	void SMBios::EnumEachTable()
@@ -476,7 +476,7 @@ namespace KlayGE
 
 	char const * Mainboard::BoardTypeName() const
 	{
-		BOOST_ASSERT(mainboard_.board_type < sizeof(mainboard_type_name_) / sizeof(mainboard_type_name_[0]));
+		BOOST_ASSERT(mainboard_.board_type < std::size(mainboard_type_name_));
 		return mainboard_type_name_[mainboard_.board_type];
 	}
 

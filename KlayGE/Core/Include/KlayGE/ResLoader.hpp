@@ -28,35 +28,28 @@
  * from http://www.klayge.org/licensing/.
  */
 
-#ifndef _KLAYGE_RESLOADER_HPP
-#define _KLAYGE_RESLOADER_HPP
+#ifndef KLAYGE_CORE_RESLOADER_HPP
+#define KLAYGE_CORE_RESLOADER_HPP
 
 #pragma once
 
 #include <KlayGE/PreDeclare.hpp>
 #include <istream>
-#include <vector>
 #include <string>
-#if defined(KLAYGE_COMPILER_MSVC)
-#pragma warning(push)
-#pragma warning(disable: 4512) // consume_via_copy in lockfree doesn't have assignment operator.
-#elif defined(KLAYGE_COMPILER_CLANG)
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wunused-parameter" // Ignore unused parameter 'x', 'alloc'
-#endif
+#include <vector>
+
 #include <boost/lockfree/spsc_queue.hpp>
-#if defined(KLAYGE_COMPILER_MSVC)
-#pragma warning(pop)
-#elif defined(KLAYGE_COMPILER_CLANG)
-#pragma clang diagnostic pop
-#endif
 
 #include <KFL/ResIdentifier.hpp>
 #include <KFL/Thread.hpp>
 
+#if defined(KLAYGE_PLATFORM_ANDROID)
+struct AAsset;
+#endif
+
 namespace KlayGE
 {
-	class KLAYGE_CORE_API ResLoadingDesc
+	class KLAYGE_CORE_API ResLoadingDesc : boost::noncopyable
 	{
 	public:
 		virtual ~ResLoadingDesc()
@@ -72,7 +65,7 @@ namespace KlayGE
 			return std::shared_ptr<void>();
 		}
 		virtual void SubThreadStage() = 0;
-		virtual std::shared_ptr<void> MainThreadStage() = 0;
+		virtual void MainThreadStage() = 0;
 
 		virtual bool HasSubThreadStage() const = 0;
 
@@ -83,7 +76,7 @@ namespace KlayGE
 		virtual std::shared_ptr<void> Resource() const = 0;
 	};
 
-	class KLAYGE_CORE_API ResLoader
+	class KLAYGE_CORE_API ResLoader final : boost::noncopyable
 	{
 	public:
 		ResLoader();
@@ -95,16 +88,21 @@ namespace KlayGE
 		void Suspend();
 		void Resume();
 
-		void AddPath(std::string const & path);
-		void DelPath(std::string const & path);
+		void AddPath(std::string_view phy_path);
+		void DelPath(std::string_view phy_path);
+		bool IsInPath(std::string_view phy_path);
 		std::string const & LocalFolder() const
 		{
 			return local_path_;
 		}
 
-		ResIdentifierPtr Open(std::string const & name);
-		std::string Locate(std::string const & name);
-		std::string AbsPath(std::string const & path);
+		void Mount(std::string_view virtual_path, std::string_view phy_path);
+		void Unmount(std::string_view virtual_path, std::string_view phy_path);
+
+		ResIdentifierPtr Open(std::string_view name);
+		std::string Locate(std::string_view name);
+		uint64_t Timestamp(std::string_view name);
+		std::string AbsPath(std::string_view path);
 
 		std::shared_ptr<void> SyncQuery(ResLoadingDescPtr const & res_desc);
 		std::shared_ptr<void> ASyncQuery(ResLoadingDescPtr const & res_desc);
@@ -131,7 +129,11 @@ namespace KlayGE
 		void Update();
 
 	private:
-		std::string RealPath(std::string const & path);
+		std::string RealPath(std::string_view path);
+		std::string RealPath(std::string_view path,
+			std::string& package_path, std::string& password, std::string& path_in_package);
+		void DecomposePackageName(std::string_view path,
+			std::string& package_path, std::string& password, std::string& path_in_package);
 
 		void AddLoadedResource(ResLoadingDescPtr const & res_desc, std::shared_ptr<void> const & res);
 		std::shared_ptr<void> FindMatchLoadedResource(ResLoadingDescPtr const & res_desc);
@@ -139,14 +141,12 @@ namespace KlayGE
 
 		void LoadingThreadFunc();
 
-		ResIdentifierPtr LocatePkt(std::string const & name, std::string const & res_name,
-			std::string& password, std::string& internal_name);
 #if defined(KLAYGE_PLATFORM_ANDROID)
-		AAsset* LocateFileAndroid(std::string const & name);
+		AAsset* LocateFileAndroid(std::string_view name);
 #elif defined(KLAYGE_PLATFORM_IOS)
-		std::string LocateFileIOS(std::string const & name);
-#elif defined(KLAYGE_PLATFORM_WINDOWS_RUNTIME)
-		std::string LocateFileWinRT(std::string const & name);
+		std::string LocateFileIOS(std::string_view name);
+#elif defined(KLAYGE_PLATFORM_WINDOWS_STORE)
+		std::string LocateFileWinRT(std::string_view name);
 #endif
 
 	private:
@@ -161,7 +161,7 @@ namespace KlayGE
 
 		std::string exe_path_;
 		std::string local_path_;
-		std::vector<std::string> paths_;
+		std::vector<std::tuple<uint64_t, uint32_t, std::string, PackagePtr>> paths_;
 		std::mutex paths_mutex_;
 
 		std::mutex loaded_mutex_;
@@ -176,4 +176,4 @@ namespace KlayGE
 	};
 }
 
-#endif			// _KLAYGE_RESLOADER_HPP
+#endif			// KLAYGE_CORE_RESLOADER_HPP

@@ -14,7 +14,6 @@
 /////////////////////////////////////////////////////////////////////////////////
 
 #include <KlayGE/KlayGE.hpp>
-#include <KFL/ThrowErr.hpp>
 #include <KFL/Util.hpp>
 #include <KFL/Math.hpp>
 #include <KlayGE/RenderFactory.hpp>
@@ -72,31 +71,17 @@ namespace KlayGE
 
 	void OGLConditionalRender::Begin()
 	{
-		if (glloader_GL_VERSION_3_3() || glloader_GL_ARB_occlusion_query2())
-		{
-			glBeginQuery(GL_ANY_SAMPLES_PASSED, query_);
-		}
-		else
-		{
-			glBeginQuery(GL_SAMPLES_PASSED, query_);
-		}
+		glBeginQuery(GL_ANY_SAMPLES_PASSED, query_);
 	}
 
 	void OGLConditionalRender::End()
 	{
-		if (glloader_GL_VERSION_3_3() || glloader_GL_ARB_occlusion_query2())
-		{
-			glEndQuery(GL_ANY_SAMPLES_PASSED);
-		}
-		else
-		{
-			glEndQuery(GL_SAMPLES_PASSED);
-		}
+		glEndQuery(GL_ANY_SAMPLES_PASSED);
 	}
 
 	void OGLConditionalRender::BeginConditionalRender()
 	{
-		OGLRenderEngine& re = *checked_cast<OGLRenderEngine*>(&Context::Instance().RenderFactoryInstance().RenderEngineInstance());
+		auto& re = checked_cast<OGLRenderEngine&>(Context::Instance().RenderFactoryInstance().RenderEngineInstance());
 		if (!re.HackForAMD())
 		{
 			glBeginConditionalRender(query_, GL_QUERY_WAIT);
@@ -105,7 +90,7 @@ namespace KlayGE
 
 	void OGLConditionalRender::EndConditionalRender()
 	{
-		OGLRenderEngine& re = *checked_cast<OGLRenderEngine*>(&Context::Instance().RenderFactoryInstance().RenderEngineInstance());
+		auto& re = checked_cast<OGLRenderEngine&>(Context::Instance().RenderFactoryInstance().RenderEngineInstance());
 		if (!re.HackForAMD())
 		{
 			glEndConditionalRender();

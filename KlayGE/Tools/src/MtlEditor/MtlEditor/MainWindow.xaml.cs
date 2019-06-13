@@ -46,11 +46,11 @@ namespace MtlEditor
 			MP_EmissiveMultiplier,
 			MP_Opacity,
 			MP_AlbedoTex,
-			MP_MetalnessTex,
-			MP_GlossinessTex,
+			MP_MetalnessGlossinessTex,
 			MP_EmissiveTex,
 			MP_NormalTex,
 			MP_HeightTex,
+			MP_OcclusionTex,
 			MP_DetailMode,
 			MP_HeightOffset,
 			MP_HeightScale,
@@ -61,6 +61,7 @@ namespace MtlEditor
 			MP_Transparent,
 			MP_AlphaTest,
 			MP_SSS,
+			MP_TwoSided,
 
 			Num_MaterialProperties
 		};
@@ -141,15 +142,10 @@ namespace MtlEditor
 			[Editor(typeof(OpenTexUserControlEditor), typeof(OpenTexUserControlEditor))]
 			public string albedo_tex { get; set; }
 			[Category("Textures")]
-			[DisplayName("Metalness")]
-			[PropertyOrder((int)MaterialProperties.MP_MetalnessTex)]
+			[DisplayName("MetalnessGlossiness")]
+			[PropertyOrder((int)MaterialProperties.MP_MetalnessGlossinessTex)]
 			[Editor(typeof(OpenTexUserControlEditor), typeof(OpenTexUserControlEditor))]
-			public string metalness_tex { get; set; }
-			[Category("Textures")]
-			[DisplayName("Glossiness")]
-			[PropertyOrder((int)MaterialProperties.MP_GlossinessTex)]
-			[Editor(typeof(OpenTexUserControlEditor), typeof(OpenTexUserControlEditor))]
-			public string glossiness_tex { get; set; }
+			public string metalness_glossiness_tex { get; set; }
 			[Category("Textures")]
 			[DisplayName("Emissive")]
 			[PropertyOrder((int)MaterialProperties.MP_EmissiveTex)]
@@ -165,6 +161,11 @@ namespace MtlEditor
 			[PropertyOrder((int)MaterialProperties.MP_HeightTex)]
 			[Editor(typeof(OpenTexUserControlEditor), typeof(OpenTexUserControlEditor))]
 			public string height_tex { get; set; }
+			[Category("Textures")]
+			[DisplayName("Occlusion")]
+			[PropertyOrder((int)MaterialProperties.MP_OcclusionTex)]
+			[Editor(typeof(OpenTexUserControlEditor), typeof(OpenTexUserControlEditor))]
+			public string occlusion_tex { get; set; }
 
 			[Category("Detail")]
 			[DisplayName("Mode")]
@@ -209,6 +210,10 @@ namespace MtlEditor
 			[DisplayName("SSS")]
 			[PropertyOrder((int)MaterialProperties.MP_SSS)]
 			public bool sss { get; set; }
+			[Category("Attributes")]
+			[DisplayName("Two Sided")]
+			[PropertyOrder((int)MaterialProperties.MP_TwoSided)]
+			public bool two_sided { get; set; }
 		}
 
 		public MainWindow()
@@ -258,8 +263,10 @@ namespace MtlEditor
 			undo.IsEnabled = false;
 			redo.IsEnabled = false;
 			skinning.IsEnabled = false;
+			skeleton.IsEnabled = false;
 			play.IsEnabled = false;
 			visualize.IsEnabled = false;
+			lod.IsEnabled = false;
 			frame_text.IsEnabled = false;
 			frame_slider.IsEnabled = false;
 
@@ -340,6 +347,8 @@ namespace MtlEditor
 			{
 				skinning.IsEnabled = true;
 				skinning.IsChecked = true;
+				skeleton.IsEnabled = true;
+				skeleton.IsChecked = false;
 				play.IsEnabled = true;
 				frame_text.IsEnabled = true;
 				frame_slider.IsEnabled = true;
@@ -349,18 +358,41 @@ namespace MtlEditor
 			{
 				skinning.IsEnabled = false;
 				skinning.IsChecked = false;
+				skeleton.IsEnabled = false;
+				skeleton.IsChecked = false;
 				play.IsEnabled = false;
 				frame_text.IsEnabled = false;
 				frame_slider.IsEnabled = false;
 				frame_slider.Maximum = 1;
 			}
+			frame_slider.Value = 0;
 			visualize.IsEnabled = true;
+			lod.IsEnabled = true;
 			properties.IsEnabled = true;
 			// Workround for.NET 4.6.1
 			visualize_gallery.Command = ApplicationCommands.Print;
 			visualize_gallery.Command = null;
+			lod_gallery.Command = ApplicationCommands.Print;
+			lod_gallery.Command = null;
 
 			frame_ = 0;
+
+			lods_items.Items.Clear();
+			{
+				var item = new RibbonGalleryItem();
+				item.Content = "Auto";
+				item.DataContext = "-1";
+				lods_items.Items.Add(item);
+			}
+			uint lods = core_.NumLods();
+			for (uint i = 0; i < lods; ++ i)
+			{
+				var item = new RibbonGalleryItem();
+				item.Content = i.ToString();
+				item.DataContext = i.ToString();
+				lods_items.Items.Add(item);
+			}
+			lod_gallery.SelectedItem = lods_items.Items[1];
 
 			meshes_[0].Children.Clear();
 			materials_[0].Children.Clear();
@@ -395,9 +427,9 @@ namespace MtlEditor
 			Microsoft.Win32.OpenFileDialog dlg = new Microsoft.Win32.OpenFileDialog();
 
 			dlg.DefaultExt = ".meshml";
-			dlg.Filter = "All Model Files|*.meshml;*.model_bin;*.3ds;*.ac;*.ase;*.assbin;*.assxml;*.b3d;*.bvh;*.collada;*.dxf;*.csm;"
-				+ "*.hmp;*.irr;*.lwo;*.lws;*.md2;*.md3;*.md5;*.mdc;*.mdl;*.nff;*.ndo;*.off;*.obj;*.ogre;*.opengex;*.ply;*.ms3d;*.cob;"
-				+ "*.blend;*.ifc;*.xgl;*.fbx;*.q3d;*.q3bsp;*.raw;*.smd;*.stl;*.terragen;*.3d;*.x|All Files|*.*";
+			dlg.Filter = "All Model Files|*.meshml;*.model_bin;*.3ds;*.ac;*.ase;*.assbin;*.assxml;*.b3d;*.bvh;*.dae;*.dxf;*.csm;"
+				+ "*.hmp;*.irr;*.lwo;*.lws;*.md2;*.md3;*.md5mesh;*.mdc;*.mdl;*.nff;*.ndo;*.off;*.obj;*.ogre;*.opengex;*.ply;*.ms3d;*.cob;"
+				+ "*.blend;*.ifc;*.xgl;*.fbx;*.q3d;*.q3bsp;*.raw;*.smd;*.stl;*.terragen;*.3d;*.x;*.gltf;*.glb|All Files|*.*";
 			dlg.CheckPathExists = true;
 			dlg.CheckFileExists = true;
 			if (true == dlg.ShowDialog())
@@ -415,8 +447,9 @@ namespace MtlEditor
 		{
 			Microsoft.Win32.SaveFileDialog dlg = new Microsoft.Win32.SaveFileDialog();
 
-			dlg.DefaultExt = ".meshml";
-			dlg.Filter = "MeshML Files (*.meshml)|*.meshml|All Files|*.*";
+			dlg.DefaultExt = ".model_bin";
+			dlg.Filter = "All Model Files|*.model_bin;*.dae;*.x;*.stp;*.obj;*.stl;*.ply;*.3ds;*.gltf;*.glb;*.assbin;*.assxml;*.x3d;*.3mf|"
+				+ "All Files|*.*";
 			dlg.OverwritePrompt = true;
 			if (true == dlg.ShowDialog())
 			{
@@ -521,6 +554,19 @@ namespace MtlEditor
 			}
 		}
 
+		public bool SkeletonValue
+		{
+			get
+			{
+				return skeleton_;
+			}
+			set
+			{
+				skeleton_ = value;
+				core_.SkeletonOn(skeleton_ ? 1 : 0);
+			}
+		}
+
 		public bool PlayValue
 		{
 			get
@@ -607,6 +653,15 @@ namespace MtlEditor
 			{
 				System.Windows.Controls.Ribbon.RibbonGalleryItem item = e.NewValue as System.Windows.Controls.Ribbon.RibbonGalleryItem;
 				core_.Visualize(Int32.Parse((string)item.DataContext));
+			}
+		}
+
+		private void LodSelectionChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
+		{
+			if (core_ != null)
+			{
+				System.Windows.Controls.Ribbon.RibbonGalleryItem item = e.NewValue as System.Windows.Controls.Ribbon.RibbonGalleryItem;
+				core_.ActiveLod(Int32.Parse((string)item.DataContext));
 			}
 		}
 
@@ -767,11 +822,11 @@ namespace MtlEditor
 				mtl_properties_obj_.opacity = core_.OpacityMaterial(mtl_id);
 
 				mtl_properties_obj_.albedo_tex = core_.Texture(mtl_id, KlayGE.MtlEditorCoreWrapper.TextureSlot.TS_Albedo);
-				mtl_properties_obj_.metalness_tex = core_.Texture(mtl_id, KlayGE.MtlEditorCoreWrapper.TextureSlot.TS_Metalness);
-				mtl_properties_obj_.glossiness_tex = core_.Texture(mtl_id, KlayGE.MtlEditorCoreWrapper.TextureSlot.TS_Glossiness);
+				mtl_properties_obj_.metalness_glossiness_tex = core_.Texture(mtl_id, KlayGE.MtlEditorCoreWrapper.TextureSlot.TS_MetalnessGlossiness);
 				mtl_properties_obj_.emissive_tex = core_.Texture(mtl_id, KlayGE.MtlEditorCoreWrapper.TextureSlot.TS_Emissive);
 				mtl_properties_obj_.normal_tex = core_.Texture(mtl_id, KlayGE.MtlEditorCoreWrapper.TextureSlot.TS_Normal);
 				mtl_properties_obj_.height_tex = core_.Texture(mtl_id, KlayGE.MtlEditorCoreWrapper.TextureSlot.TS_Height);
+				mtl_properties_obj_.occlusion_tex = core_.Texture(mtl_id, KlayGE.MtlEditorCoreWrapper.TextureSlot.TS_Occlusion);
 
 				mtl_properties_obj_.detail_mode = DetailModeItemsSource.items[(int)core_.DetailMode(mtl_id)].DisplayName;
 				mtl_properties_obj_.height_offset = core_.HeightOffset(mtl_id);
@@ -784,6 +839,7 @@ namespace MtlEditor
 				mtl_properties_obj_.transparent = core_.TransparentMaterial(mtl_id);
 				mtl_properties_obj_.alpha_test = core_.AlphaTestMaterial(mtl_id);
 				mtl_properties_obj_.sss = core_.SSSMaterial(mtl_id);
+				mtl_properties_obj_.two_sided = core_.TwoSidedMaterial(mtl_id);
 
 				bool used = false;
 				for (uint i = 0; i < core_.NumMeshes(); ++ i)
@@ -816,10 +872,10 @@ namespace MtlEditor
 				{
 					case SystemProperties.SP_SystemSkyBox:
 						{
-							string sky_box_name = RelativePath(system_properties_obj_.SkyBox);
-							if (core_.SkyboxName() != sky_box_name)
+							string skybox_name = RelativePath(system_properties_obj_.SkyBox);
+							if (core_.SkyboxName() != skybox_name)
 							{
-								this.ExecuteCommand(new MtlEditorCommandSetSkyboxName(core_, sky_box_name));
+								this.ExecuteCommand(new MtlEditorCommandSetSkyboxName(core_, skybox_name));
 							}
 						}
 						break;
@@ -932,28 +988,15 @@ namespace MtlEditor
 						}
 						break;
 
-					case MaterialProperties.MP_MetalnessTex:
+					case MaterialProperties.MP_MetalnessGlossinessTex:
 						if (selected_mtl_id_ > 0)
 						{
 							uint mtl_id = selected_mtl_id_ - 1;
-							string metalness_tex = RelativePath(mtl_properties_obj_.metalness_tex);
-							if (core_.Texture(mtl_id, KlayGE.MtlEditorCoreWrapper.TextureSlot.TS_Metalness) != metalness_tex)
+							string metalness_glossiness_tex = RelativePath(mtl_properties_obj_.metalness_glossiness_tex);
+							if (core_.Texture(mtl_id, KlayGE.MtlEditorCoreWrapper.TextureSlot.TS_MetalnessGlossiness) != metalness_glossiness_tex)
 							{
 								this.ExecuteCommand(new MtlEditorCommandSetTexture(core_, mtl_id,
-									KlayGE.MtlEditorCoreWrapper.TextureSlot.TS_Metalness, metalness_tex));
-							}
-						}
-						break;
-
-					case MaterialProperties.MP_GlossinessTex:
-						if (selected_mtl_id_ > 0)
-						{
-							uint mtl_id = selected_mtl_id_ - 1;
-							string glossiness_tex = RelativePath(mtl_properties_obj_.glossiness_tex);
-							if (core_.Texture(mtl_id, KlayGE.MtlEditorCoreWrapper.TextureSlot.TS_Glossiness) != glossiness_tex)
-							{
-								this.ExecuteCommand(new MtlEditorCommandSetTexture(core_, mtl_id,
-									KlayGE.MtlEditorCoreWrapper.TextureSlot.TS_Glossiness, glossiness_tex));
+									KlayGE.MtlEditorCoreWrapper.TextureSlot.TS_MetalnessGlossiness, metalness_glossiness_tex));
 							}
 						}
 						break;
@@ -993,6 +1036,19 @@ namespace MtlEditor
 							{
 								this.ExecuteCommand(new MtlEditorCommandSetTexture(core_, mtl_id,
 									KlayGE.MtlEditorCoreWrapper.TextureSlot.TS_Height, height_tex));
+							}
+						}
+						break;
+
+					case MaterialProperties.MP_OcclusionTex:
+						if (selected_mtl_id_ > 0)
+						{
+							uint mtl_id = selected_mtl_id_ - 1;
+							string occlusion_tex = RelativePath(mtl_properties_obj_.occlusion_tex);
+							if (core_.Texture(mtl_id, KlayGE.MtlEditorCoreWrapper.TextureSlot.TS_Occlusion) != occlusion_tex)
+							{
+								this.ExecuteCommand(new MtlEditorCommandSetTexture(core_, mtl_id,
+									KlayGE.MtlEditorCoreWrapper.TextureSlot.TS_Occlusion, occlusion_tex));
 							}
 						}
 						break;
@@ -1112,6 +1168,17 @@ namespace MtlEditor
 							if (core_.SSSMaterial(mtl_id) != mtl_properties_obj_.sss)
 							{
 								this.ExecuteCommand(new MtlEditorCommandSetSSS(core_, mtl_id, mtl_properties_obj_.sss));
+							}
+						}
+						break;
+
+					case MaterialProperties.MP_TwoSided:
+						if (selected_mtl_id_ > 0)
+						{
+							uint mtl_id = selected_mtl_id_ - 1;
+							if (core_.TwoSidedMaterial(mtl_id) != mtl_properties_obj_.two_sided)
+							{
+								this.ExecuteCommand(new MtlEditorCommandSetTwoSided(core_, mtl_id, mtl_properties_obj_.two_sided));
 							}
 						}
 						break;
@@ -1290,7 +1357,7 @@ namespace MtlEditor
 		private Color FloatPtrToLDRColor(float[] clr, float multiplier)
 		{
 			float[] temp = new float[3];
-			for (int i = 0; i < 3; ++i)
+			for (int i = 0; i < 3; ++ i)
 			{
 				temp[i] = LinearToSRGB(clr[i] / multiplier);
 			}
@@ -1306,7 +1373,7 @@ namespace MtlEditor
 			ret[0] = clr.R / 255.0f;
 			ret[1] = clr.G / 255.0f;
 			ret[2] = clr.B / 255.0f;
-			for (int i = 0; i < 3; ++i)
+			for (int i = 0; i < 3; ++ i)
 			{
 				ret[i] = SRGBToLinear(ret[i]) * multiplier;
 			}
@@ -1332,6 +1399,7 @@ namespace MtlEditor
 		private bool fps_camera_ = false;
 		private bool line_mode_ = false;
 		private bool imposter_mode_ = false;
+		private bool skeleton_ = false;
 		private bool play_ = false;
 
 		private readonly ReadOnlyCollection<MeshEntityViewModel> meshes_;

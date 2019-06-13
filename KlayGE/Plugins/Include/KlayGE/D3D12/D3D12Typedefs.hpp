@@ -34,9 +34,9 @@
 #pragma once
 
 #include <KlayGE/SALWrapper.hpp>
-#include <dxgi1_5.h>
+#include <dxgi1_6.h>
 #include <d3d12.h>
-#if defined(KLAYGE_COMPILER_GCC) || defined(KLAYGE_COMPILER_CLANG)
+#if defined(KLAYGE_COMPILER_GCC)
 #undef __out
 #endif
 
@@ -44,6 +44,7 @@ namespace KlayGE
 {
 	typedef std::shared_ptr<IDXGIFactory4>				IDXGIFactory4Ptr;
 	typedef std::shared_ptr<IDXGIFactory5>				IDXGIFactory5Ptr;
+	typedef std::shared_ptr<IDXGIFactory6>				IDXGIFactory6Ptr;
 	typedef std::shared_ptr<IDXGIAdapter1>				IDXGIAdapter1Ptr;
 	typedef std::shared_ptr<IDXGISwapChain3>			IDXGISwapChain3Ptr;
 	typedef std::shared_ptr<IDXGISwapChain4>			IDXGISwapChain4Ptr;

@@ -24,7 +24,7 @@
 //////////////////////////////////////////////////////////////////////////////////
 
 #include <KlayGE/KlayGE.hpp>
-#include <KFL/ThrowErr.hpp>
+#include <KFL/ErrorHandling.hpp>
 #include <KFL/Util.hpp>
 #include <KFL/Math.hpp>
 #include <KlayGE/RenderEngine.hpp>
@@ -39,9 +39,9 @@
 namespace KlayGE
 {
 	OGLGraphicsBuffer::OGLGraphicsBuffer(BufferUsage usage, uint32_t access_hint, GLenum target,
-					uint32_t size_in_byte, ElementFormat fmt)
-			: GraphicsBuffer(usage, access_hint, size_in_byte),
-				vb_(0), tex_(0), target_(target), fmt_as_shader_res_(fmt)
+					uint32_t size_in_byte, uint32_t structure_byte_stride)
+			: GraphicsBuffer(usage, access_hint, size_in_byte, structure_byte_stride),
+				vb_(0), tex_(0), target_(target)
 	{
 		BOOST_ASSERT((GL_ARRAY_BUFFER == target) || (GL_ELEMENT_ARRAY_BUFFER == target)
 			|| (GL_UNIFORM_BUFFER == target));
@@ -65,64 +65,60 @@ namespace KlayGE
 			glGenBuffers(1, &vb_);
 		}
 
-		GLenum usage;
-		if (BU_Static == usage_)
+		GLbitfield flags = 0;
+		if (BU_Dynamic == usage_)
 		{
-			if (access_hint_ & EAH_CPU_Read)
-			{
-				usage = GL_STATIC_READ;
-			}
-			else
-			{
-				usage = GL_STATIC_DRAW;
-			}
+			flags |= GL_DYNAMIC_STORAGE_BIT;
 		}
-		else
+		if (access_hint_ & EAH_CPU_Read)
 		{
-			if (access_hint_ & EAH_CPU_Read)
-			{
-				usage = GL_DYNAMIC_READ;
-			}
-			else
-			{
-				usage = GL_DYNAMIC_DRAW;
-			}
+			flags |= GL_MAP_READ_BIT;
+		}
+		if (access_hint_ & EAH_CPU_Write)
+		{
+			flags |= GL_MAP_WRITE_BIT;
 		}
 
 		if (glloader_GL_VERSION_4_5() || glloader_GL_ARB_direct_state_access())
 		{
-			glNamedBufferData(vb_, static_cast<GLsizeiptr>(size_in_byte_), data, usage);
-		}
-		else if (glloader_GL_EXT_direct_state_access())
-		{
-			glNamedBufferDataEXT(vb_, static_cast<GLsizeiptr>(size_in_byte_), data, usage);
+			glNamedBufferStorage(vb_, static_cast<GLsizeiptr>(size_in_byte_), data, flags);
 		}
 		else
 		{
-			OGLRenderEngine& re = *checked_cast<OGLRenderEngine*>(&Context::Instance().RenderFactoryInstance().RenderEngineInstance());
+			auto& re = checked_cast<OGLRenderEngine&>(Context::Instance().RenderFactoryInstance().RenderEngineInstance());
 			re.BindBuffer(target_, vb_);
-			glBufferData(target_, static_cast<GLsizeiptr>(size_in_byte_), data, usage);
-		}
 
-		if ((access_hint_ & EAH_GPU_Read) && (fmt_as_shader_res_ != EF_Unknown))
-		{
-			GLint internal_fmt;
-			GLenum gl_fmt;
-			GLenum gl_type;
-			OGLMapping::MappingFormat(internal_fmt, gl_fmt, gl_type, fmt_as_shader_res_);
-
-			if (glloader_GL_VERSION_4_5() || glloader_GL_ARB_direct_state_access())
+			if (glloader_GL_VERSION_4_4() || glloader_GL_ARB_buffer_storage())
 			{
-				glCreateTextures(GL_TEXTURE_BUFFER, 1, &tex_);
-				glTextureBuffer(tex_, internal_fmt, vb_);
+				glBufferStorage(target_, static_cast<GLsizeiptr>(size_in_byte_), data, flags);
 			}
 			else
 			{
-				glGenTextures(1, &tex_);
-				// TODO: It could affect the texture binding cache in OGLRenderEngine
-				glBindTexture(GL_TEXTURE_BUFFER, tex_);
-				glTexBuffer(GL_TEXTURE_BUFFER, internal_fmt, vb_);
-				glBindTexture(GL_TEXTURE_BUFFER, 0);
+				GLenum usage;
+				if (BU_Static == usage_)
+				{
+					if (access_hint_ & EAH_CPU_Read)
+					{
+						usage = GL_STATIC_READ;
+					}
+					else
+					{
+						usage = GL_STATIC_DRAW;
+					}
+				}
+				else
+				{
+					if (access_hint_ & EAH_CPU_Read)
+					{
+						usage = GL_DYNAMIC_READ;
+					}
+					else
+					{
+						usage = GL_DYNAMIC_DRAW;
+					}
+				}
+
+				glBufferData(target_, static_cast<GLsizeiptr>(size_in_byte_), data, usage);
 			}
 		}
 	}
@@ -131,7 +127,15 @@ namespace KlayGE
 	{
 		if (tex_ != 0)
 		{
-			glDeleteTextures(1, &tex_);
+			if (Context::Instance().RenderFactoryValid())
+			{
+				auto& re = checked_cast<OGLRenderEngine&>(Context::Instance().RenderFactoryInstance().RenderEngineInstance());
+				re.DeleteTextures(1, &tex_);
+			}
+			else
+			{
+				glDeleteTextures(1, &tex_);
+			}
 
 			tex_ = 0;
 		}
@@ -140,7 +144,7 @@ namespace KlayGE
 		{
 			if (Context::Instance().RenderFactoryValid())
 			{
-				OGLRenderEngine& re = *checked_cast<OGLRenderEngine*>(&Context::Instance().RenderFactoryInstance().RenderEngineInstance());
+				auto& re = checked_cast<OGLRenderEngine&>(Context::Instance().RenderFactoryInstance().RenderEngineInstance());
 				re.DeleteBuffers(1, &vb_);
 			}
 			else
@@ -152,9 +156,14 @@ namespace KlayGE
 		}
 	}
 
+	bool OGLGraphicsBuffer::HWResourceReady() const
+	{
+		return vb_ != 0;
+	}
+
 	void* OGLGraphicsBuffer::Map(BufferAccess ba)
 	{
-		OGLRenderEngine& re = *checked_cast<OGLRenderEngine*>(&Context::Instance().RenderFactoryInstance().RenderEngineInstance());
+		auto& re = checked_cast<OGLRenderEngine&>(Context::Instance().RenderFactoryInstance().RenderEngineInstance());
 
 		void* p;
 		if (!(re.HackForIntel()) && (ba == BA_Write_Only) && (BU_Dynamic == usage_))
@@ -193,7 +202,7 @@ namespace KlayGE
 
 			case BA_Write_No_Overwrite:
 				// TODO
-				BOOST_ASSERT(false);
+				KFL_UNREACHABLE("Not implemented");
 				break;
 			}
 
@@ -226,7 +235,7 @@ namespace KlayGE
 		}
 		else
 		{
-			OGLRenderEngine& re = *checked_cast<OGLRenderEngine*>(&Context::Instance().RenderFactoryInstance().RenderEngineInstance());
+			auto& re = checked_cast<OGLRenderEngine&>(Context::Instance().RenderFactoryInstance().RenderEngineInstance());
 			re.BindBuffer(target_, vb_);
 			glUnmapBuffer(target_);
 		}
@@ -234,26 +243,64 @@ namespace KlayGE
 
 	void OGLGraphicsBuffer::Active(bool force)
 	{
-		OGLRenderEngine& re = *checked_cast<OGLRenderEngine*>(&Context::Instance().RenderFactoryInstance().RenderEngineInstance());
+		auto& re = checked_cast<OGLRenderEngine&>(Context::Instance().RenderFactoryInstance().RenderEngineInstance());
 		re.BindBuffer(target_, vb_, force);
 	}
 
-	void OGLGraphicsBuffer::CopyToBuffer(GraphicsBuffer& rhs)
+	GLuint OGLGraphicsBuffer::RetrieveGLTexture(ElementFormat pf)
 	{
-		OGLRenderEngine& re = *checked_cast<OGLRenderEngine*>(&Context::Instance().RenderFactoryInstance().RenderEngineInstance());
+		if ((tex_ == 0) && this->HWResourceReady())
+		{
+			if ((access_hint_ & EAH_GPU_Read) && (pf != EF_Unknown))
+			{
+				GLint internal_fmt;
+				GLenum gl_fmt;
+				GLenum gl_type;
+				OGLMapping::MappingFormat(internal_fmt, gl_fmt, gl_type, pf);
+
+				if (glloader_GL_VERSION_4_5() || glloader_GL_ARB_direct_state_access())
+				{
+					glCreateTextures(GL_TEXTURE_BUFFER, 1, &tex_);
+					glTextureBuffer(tex_, internal_fmt, vb_);
+				}
+				else
+				{
+					glGenTextures(1, &tex_);
+					// TODO: It could affect the texture binding cache in OGLRenderEngine
+					glBindTexture(GL_TEXTURE_BUFFER, tex_);
+					glTexBuffer(GL_TEXTURE_BUFFER, internal_fmt, vb_);
+					glBindTexture(GL_TEXTURE_BUFFER, 0);
+				}
+			}
+		}
+		return tex_;
+	}
+
+	void OGLGraphicsBuffer::CopyToBuffer(GraphicsBuffer& target)
+	{
+		this->CopyToSubBuffer(target, 0, 0, size_in_byte_);
+	}
+
+	void OGLGraphicsBuffer::CopyToSubBuffer(GraphicsBuffer& target,
+		uint32_t dst_offset, uint32_t src_offset, uint32_t size)
+	{
+		BOOST_ASSERT(src_offset + size <= this->Size());
+		BOOST_ASSERT(dst_offset + size <= target.Size());
+
+		auto& re = checked_cast<OGLRenderEngine&>(Context::Instance().RenderFactoryInstance().RenderEngineInstance());
 		if (glloader_GL_VERSION_4_5() || glloader_GL_ARB_direct_state_access())
 		{
-			glCopyNamedBufferSubData(vb_, checked_cast<OGLGraphicsBuffer*>(&rhs)->vb_, 0, 0, size_in_byte_);
+			glCopyNamedBufferSubData(vb_, checked_cast<OGLGraphicsBuffer&>(target).vb_, src_offset, dst_offset, size);
 		}
 		else if (glloader_GL_EXT_direct_state_access())
 		{
-			glNamedCopyBufferSubDataEXT(vb_, checked_cast<OGLGraphicsBuffer*>(&rhs)->vb_, 0, 0, size_in_byte_);
+			glNamedCopyBufferSubDataEXT(vb_, checked_cast<OGLGraphicsBuffer&>(target).vb_, src_offset, dst_offset, size);
 		}
 		else
 		{
 			re.BindBuffer(GL_COPY_READ_BUFFER, vb_);
-			re.BindBuffer(GL_COPY_WRITE_BUFFER, checked_cast<OGLGraphicsBuffer*>(&rhs)->vb_);
-			glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, size_in_byte_);
+			re.BindBuffer(GL_COPY_WRITE_BUFFER, checked_cast<OGLGraphicsBuffer&>(target).vb_);
+			glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, src_offset, dst_offset, size);
 		}
 	}
 
@@ -261,7 +308,7 @@ namespace KlayGE
 	{
 		if (glloader_GL_VERSION_4_5() || glloader_GL_ARB_direct_state_access())
 		{
-			glNamedBufferSubDataEXT(vb_, offset, size, data);
+			glNamedBufferSubData(vb_, offset, size, data);
 		}
 		else if (glloader_GL_EXT_direct_state_access())
 		{
@@ -269,7 +316,7 @@ namespace KlayGE
 		}
 		else
 		{
-			OGLRenderEngine& re = *checked_cast<OGLRenderEngine*>(&Context::Instance().RenderFactoryInstance().RenderEngineInstance());
+			auto& re = checked_cast<OGLRenderEngine&>(Context::Instance().RenderFactoryInstance().RenderEngineInstance());
 			re.BindBuffer(target_, vb_);
 			glBufferSubData(target_, offset, size, data);
 		}

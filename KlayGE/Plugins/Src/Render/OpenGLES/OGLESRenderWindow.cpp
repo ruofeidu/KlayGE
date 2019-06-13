@@ -11,7 +11,9 @@
 //////////////////////////////////////////////////////////////////////////////////
 
 #include <KlayGE/KlayGE.hpp>
-#include <KFL/ThrowErr.hpp>
+#include <KFL/CXX17.hpp>
+#include <KFL/CXX17/iterator.hpp>
+#include <KFL/ErrorHandling.hpp>
 #include <KFL/Util.hpp>
 #include <KFL/Math.hpp>
 #include <KlayGE/SceneManager.hpp>
@@ -23,8 +25,10 @@
 #include <KlayGE/Window.hpp>
 
 #include <map>
+#include <string>
+#include <system_error>
+
 #include <boost/assert.hpp>
-#include <boost/lexical_cast.hpp>
 
 #include <glloader/glloader.h>
 
@@ -51,10 +55,16 @@ namespace KlayGE
 		color_bits_			= NumFormatBits(settings.color_fmt);
 
 		WindowPtr const & main_wnd = Context::Instance().AppInstance().MainWnd();		
-		on_exit_size_move_connect_ = main_wnd->OnExitSizeMove().connect(std::bind(&OGLESRenderWindow::OnExitSizeMove, this,
-			std::placeholders::_1));
-		on_size_connect_ = main_wnd->OnSize().connect(std::bind(&OGLESRenderWindow::OnSize, this,
-			std::placeholders::_1, std::placeholders::_2));
+		on_exit_size_move_connect_ = main_wnd->OnExitSizeMove().Connect(
+			[this](Window const & win)
+			{
+				this->OnExitSizeMove(win);
+			});
+		on_size_connect_ = main_wnd->OnSize().Connect(
+			[this](Window const & win, bool active)
+			{
+				this->OnSize(win, active);
+			});
 
 		if (isFullScreen_)
 		{
@@ -93,8 +103,7 @@ namespace KlayGE
 			break;
 
 		default:
-			BOOST_ASSERT(false);
-			break;
+			KFL_UNREACHABLE("Invalid color format");
 		}
 		switch (settings.depth_stencil_fmt)
 		{
@@ -119,74 +128,73 @@ namespace KlayGE
 			break;
 		}
 
-		bool test_es_3_2 = true;
-		bool test_es_3_1 = true;
-		bool test_es_3_0 = true;
+		static std::pair<int, int> constexpr all_versions[] =
+		{
+			std::make_pair(3, 2),
+			std::make_pair(3, 1),
+			std::make_pair(3, 0)
+		};
+
+		ArrayRef<std::pair<int, int>> available_versions;
+		{
+			static std::string_view const all_version_names[] =
+			{
+				"3.2",
+				"3.1",
+				"3.0"
+			};
+			KLAYGE_STATIC_ASSERT(std::size(all_version_names) == std::size(all_versions));
+
+			bool test_es_3_2 = true;
+			bool test_es_3_1 = true;
 #if defined(KLAYGE_PLATFORM_ANDROID)
-		// TODO
-		test_es_3_2 = false;
-		test_es_3_1 = false;
-#if (__ANDROID_API__ < 18)
-		test_es_3_0 = false;
-#endif
+			// TODO
+			test_es_3_2 = false;
 #endif
 #if defined(KLAYGE_PLATFORM_DARWIN)
-		// TODO
-		test_es_3_2 = false;
-		test_es_3_1 = false;
-		test_es_3_0 = false;
+			// TODO
+			test_es_3_2 = false;
+			test_es_3_1 = false;
 #endif
 
-		std::vector<std::tuple<std::string, EGLint, int, int>> available_versions;
-		if (test_es_3_2)
-		{
-			available_versions.push_back(std::make_tuple("3.2", EGL_OPENGL_ES3_BIT_KHR, 3, 2));
-		}
-		if (test_es_3_1)
-		{
-			available_versions.push_back(std::make_tuple("3.1", EGL_OPENGL_ES3_BIT_KHR, 3, 1));
-		}
-		if (test_es_3_0)
-		{
-			available_versions.push_back(std::make_tuple("3.0", EGL_OPENGL_ES3_BIT_KHR, 3, 0));
-		}
-		available_versions.push_back(std::make_tuple("2.0", EGL_OPENGL_ES2_BIT, 2, 0));
-
-		for (size_t index = 0; index < settings.options.size(); ++ index)
-		{
-			std::string const & opt_name = settings.options[index].first;
-			std::string const & opt_val = settings.options[index].second;
-			if (0 == strcmp("version", opt_name.c_str()))
+			uint32_t version_start_index = 0;
+			if (!test_es_3_2)
 			{
-				size_t feature_index = 0;
-				for (size_t i = 0; i < available_versions.size(); ++ i)
+				version_start_index = 1;
+			}
+			if (!test_es_3_1)
+			{
+				version_start_index = 2;
+			}
+
+			for (size_t index = 0; index < settings.options.size(); ++ index)
+			{
+				std::string_view opt_name = settings.options[index].first;
+				std::string_view opt_val = settings.options[index].second;
+				if ("version" == opt_name)
 				{
-					if (std::get<0>(available_versions[i]) == opt_val)
+					for (uint32_t i = version_start_index; i < std::size(all_version_names); ++ i)
 					{
-						feature_index = i;
-						break;
+						if (all_version_names[i] == opt_val)
+						{
+							version_start_index = i;
+							break;
+						}
 					}
 				}
-
-				if (feature_index > 0)
-				{
-					available_versions.erase(available_versions.begin(),
-						available_versions.begin() + feature_index);
-				}
 			}
+
+			available_versions = MakeArrayRef(all_versions).Slice(version_start_index);
 		}
 
-		std::vector<EGLint> visual_attr;
-		visual_attr.push_back(EGL_RENDERABLE_TYPE);
-		visual_attr.push_back(std::get<1>(available_versions[0]));
-		visual_attr.push_back(EGL_RED_SIZE);
-		visual_attr.push_back(r_size);
-		visual_attr.push_back(EGL_GREEN_SIZE);
-		visual_attr.push_back(g_size);
-		visual_attr.push_back(EGL_BLUE_SIZE);
-		visual_attr.push_back(b_size);
-		visual_attr.push_back(EGL_ALPHA_SIZE);
-		visual_attr.push_back(a_size);
+		std::vector<EGLint> visual_attr =
+		{
+			EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
+			EGL_RED_SIZE, r_size,
+			EGL_GREEN_SIZE, g_size,
+			EGL_BLUE_SIZE, b_size,
+			EGL_ALPHA_SIZE, a_size
+		};
 		if (d_size > 0)
 		{
 			visual_attr.push_back(EGL_DEPTH_SIZE);
@@ -205,39 +213,17 @@ namespace KlayGE
 		visual_attr.push_back(EGL_NONE);				// end of list
 
 		EGLint egl_major_ver, egl_minor_ver;
-		EGLint num_cfgs;
 		eglInitialize(display_, &egl_major_ver, &egl_minor_ver);
 
-		int start_version_index = -1;
-		for (size_t i = 0; i < available_versions.size(); ++ i)
+		EGLint num_cfgs;
+		if (eglChooseConfig(display_, &visual_attr[0], &cfg_, 1, &num_cfgs))
 		{
-			visual_attr[1] = std::get<1>(available_versions[i]);
-			if (eglChooseConfig(display_, &visual_attr[0], &cfg_, 1, &num_cfgs))
+			if ((num_cfgs == 0) && (24 == d_size))
 			{
-				if (num_cfgs > 0)
-				{
-					start_version_index = static_cast<int>(i);
-					break;
-				}
+				visual_attr[11] = 16;
+				eglChooseConfig(display_, &visual_attr[0], &cfg_, 1, &num_cfgs);
 			}
 		}
-		if ((start_version_index < 0) && (24 == d_size))
-		{
-			visual_attr[11] = 16;
-			for (size_t i = 0; i < available_versions.size(); ++ i)
-			{
-				visual_attr[1] = std::get<1>(available_versions[i]);
-				if (eglChooseConfig(display_, &visual_attr[0], &cfg_, 1, &num_cfgs))
-				{
-					if (num_cfgs > 0)
-					{
-						start_version_index = static_cast<int>(i);
-						break;
-					}
-				}
-			}
-		}
-		BOOST_ASSERT(start_version_index != -1);
 
 		NativeWindowType wnd;
 #if defined KLAYGE_PLATFORM_WINDOWS
@@ -256,14 +242,18 @@ namespace KlayGE
 		surf_ = eglCreateWindowSurface(display_, cfg_, wnd, nullptr);
 
 		context_ = nullptr;
-		EGLint ctx_attr[] = { EGL_CONTEXT_MAJOR_VERSION_KHR, std::get<2>(available_versions[start_version_index]),
-			EGL_CONTEXT_MINOR_VERSION_KHR, std::get<3>(available_versions[start_version_index]), EGL_NONE };
-		size_t test_version_index = start_version_index;
+		EGLint ctx_attr[] =
+		{
+			EGL_CONTEXT_MAJOR_VERSION, available_versions[0].first,
+			EGL_CONTEXT_MINOR_VERSION, available_versions[0].second,
+			EGL_NONE
+		};
+		size_t test_version_index = 0;
 		while ((nullptr == context_) && (test_version_index < available_versions.size()))
 		{
-			ctx_attr[1] = std::get<2>(available_versions[test_version_index]);
-			ctx_attr[2] = EGL_CONTEXT_MINOR_VERSION_KHR;
-			ctx_attr[3] = std::get<3>(available_versions[test_version_index]);
+			ctx_attr[1] = available_versions[test_version_index].first;
+			ctx_attr[2] = EGL_CONTEXT_MINOR_VERSION;
+			ctx_attr[3] = available_versions[test_version_index].second;
 			context_ = eglCreateContext(display_, cfg_, EGL_NO_CONTEXT, ctx_attr);
 
 			if (nullptr == context_)
@@ -281,9 +271,9 @@ namespace KlayGE
 
 		eglMakeCurrent(display_, surf_, surf_, context_);
 
-		if (!glloader_GLES_VERSION_2_0())
+		if (!glloader_GLES_VERSION_3_0())
 		{
-			THR(errc::function_not_supported);
+			TERRC(std::errc::function_not_supported);
 		}
 
 		eglSwapInterval(display_, 0);
@@ -304,14 +294,14 @@ namespace KlayGE
 		description_ = vendor + L" " + renderer + L" " + version;
 		if (settings.sample_count > 1)
 		{
-			description_ += L" (" + boost::lexical_cast<std::wstring>(settings.sample_count) + L"x AA)";
+			description_ += L" (" + std::to_wstring(settings.sample_count) + L"x AA)";
 		}
 	}
 
 	OGLESRenderWindow::~OGLESRenderWindow()
 	{
-		on_exit_size_move_connect_.disconnect();
-		on_size_connect_.disconnect();
+		on_exit_size_move_connect_.Disconnect();
+		on_size_connect_.Disconnect();
 
 		this->Destroy();
 	}
@@ -400,9 +390,9 @@ namespace KlayGE
 
 	void OGLESRenderWindow::WindowMovedOrResized(Window const & win)
 	{
-#if defined KLAYGE_PLATFORM_WINDOWS
 		KFL_UNUSED(win);
 
+#if defined KLAYGE_PLATFORM_WINDOWS
 		::RECT rect;
 		::GetClientRect(hWnd_, &rect);
 
@@ -420,27 +410,17 @@ namespace KlayGE
 		uint32_t new_width = DisplayWidth(x_display_, screen);
 		uint32_t new_height = DisplayHeight(x_display_, screen);
 #elif defined KLAYGE_PLATFORM_ANDROID
-		// TODO: Is it correct?
-		uint32_t new_left = win.Left() / 2;
-		uint32_t new_top = win.Top() / 2;
-		if ((new_left != left_) || (new_top != top_))
-		{
-			this->Reposition(new_left, new_top);
-		}
-
 		EGLint w, h;
 		eglQuerySurface(display_, surf_, EGL_WIDTH, &w);
 		eglQuerySurface(display_, surf_, EGL_HEIGHT, &h);
 
-		uint32_t new_width = w - new_left;
-		uint32_t new_height = h - new_top;
+		uint32_t new_width = w;
+		uint32_t new_height = h;
 #elif defined KLAYGE_PLATFORM_DARWIN
-		KFL_UNUSED(win);
 		uint2 screen = Context::Instance().AppInstance().MainWnd()->GetNSViewSize();
 		uint32_t new_width = screen[0];
 		uint32_t new_height = screen[1];
 #elif defined KLAYGE_PLATFORM_IOS
-		KFL_UNUSED(win);
 		uint2 screen = Context::Instance().AppInstance().MainWnd()->GetGLKViewSize();
 		uint32_t new_width = screen[0];
 		uint32_t new_height = screen[1];

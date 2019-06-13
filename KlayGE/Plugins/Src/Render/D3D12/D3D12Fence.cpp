@@ -29,7 +29,7 @@
  */
 
 #include <KlayGE/KlayGE.hpp>
-#include <KFL/ThrowErr.hpp>
+#include <KFL/ErrorHandling.hpp>
 #include <KFL/Util.hpp>
 #include <KFL/COMPtr.hpp>
 #include <KlayGE/Context.hpp>
@@ -43,19 +43,14 @@ namespace KlayGE
 	D3D12Fence::D3D12Fence()
 			: last_completed_val_(0), fence_val_(1)
 	{
-		RenderFactory& rf = Context::Instance().RenderFactoryInstance();
-		D3D12RenderEngine& re = *checked_cast<D3D12RenderEngine*>(&rf.RenderEngineInstance());
-		ID3D12DevicePtr const & device = re.D3DDevice();
+		auto const& re = checked_cast<D3D12RenderEngine const&>(Context::Instance().RenderFactoryInstance().RenderEngineInstance());
+		ID3D12Device* device = re.D3DDevice();
 
 		ID3D12Fence* fence;
-		TIF(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_ID3D12Fence, reinterpret_cast<void**>(&fence)));
+		TIFHR(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_ID3D12Fence, reinterpret_cast<void**>(&fence)));
 		fence_ = MakeCOMPtr(fence);
 
-#if (_WIN32_WINNT >= _WIN32_WINNT_VISTA)
 		fence_event_ = ::CreateEventEx(nullptr, nullptr, 0, EVENT_ALL_ACCESS);
-#else
-		fence_event_ = ::CreateEvent(nullptr, FALSE, FALSE, nullptr);
-#endif
 	}
 
 	D3D12Fence::~D3D12Fence()
@@ -65,30 +60,25 @@ namespace KlayGE
 
 	uint64_t D3D12Fence::Signal(FenceType ft)
 	{
-		RenderFactory& rf = Context::Instance().RenderFactoryInstance();
-		D3D12RenderEngine& re = *checked_cast<D3D12RenderEngine*>(&rf.RenderEngineInstance());
-		ID3D12CommandQueuePtr cmd_queue;
+		auto const& re = checked_cast<D3D12RenderEngine const&>(Context::Instance().RenderFactoryInstance().RenderEngineInstance());
+		ID3D12CommandQueue* cmd_queue;
 		switch (ft)
 		{
 		case FT_Render:
 			cmd_queue = re.D3DRenderCmdQueue();
 			break;
 
-		case FT_Compute:
-			cmd_queue = re.D3DComputeCmdQueue();
-			break;
-
-		case FT_Copy:
-			cmd_queue = re.D3DCopyCmdQueue();
-			break;
-
 		default:
-			BOOST_ASSERT(false);
-			break;
+			KFL_UNREACHABLE("Invalid fence type");
 		}
 
+		return this->Signal(cmd_queue);
+	}
+
+	uint64_t D3D12Fence::Signal(ID3D12CommandQueue* cmd_queue)
+	{
 		uint64_t const id = fence_val_;
-		TIF(cmd_queue->Signal(fence_.get(), id));
+		TIFHR(cmd_queue->Signal(fence_.get(), id));
 		++ fence_val_;
 		return id;
 	}
@@ -97,7 +87,7 @@ namespace KlayGE
 	{
 		if (!this->Completed(id))
 		{
-			TIF(fence_->SetEventOnCompletion(id, fence_event_));
+			TIFHR(fence_->SetEventOnCompletion(id, fence_event_));
 			::WaitForSingleObjectEx(fence_event_, INFINITE, FALSE);
 		}
 	}

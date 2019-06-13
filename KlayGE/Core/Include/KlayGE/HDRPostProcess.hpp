@@ -177,12 +177,6 @@ namespace KlayGE
 		GpuFftPtr ifft_;
 	};
 
-	class KLAYGE_CORE_API ToneMappingPostProcess : public PostProcess
-	{
-	public:
-		ToneMappingPostProcess();
-	};
-
 
 	class KLAYGE_CORE_API HDRPostProcess : public PostProcess
 	{
